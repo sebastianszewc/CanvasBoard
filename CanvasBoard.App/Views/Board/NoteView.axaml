@@ -1,0 +1,25 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:md="https://github.com/whistyun/Markdown.Avalonia"
+             x:Class="CanvasBoard.App.Views.Board.NoteView">
+  <Border Background="#80000000"
+          Padding="4"
+          CornerRadius="4"
+          DoubleTapped="OnBorderDoubleTapped">
+    <Grid>
+      <!-- Rendered markdown (view mode) -->
+      <md:MarkdownScrollViewer x:Name="MarkdownView" />
+
+      <!-- Raw markdown editor (edit mode) -->
+      <TextBox x:Name="MarkdownEditor"
+               AcceptsReturn="True"
+               MinWidth="200"
+               MinHeight="80"
+               Background="#222222"
+               Foreground="White"
+               BorderThickness="0"
+               FontFamily="Consolas, Monospace"
+               TextWrapping="Wrap" />
+    </Grid>
+  </Border>
+</UserControl>

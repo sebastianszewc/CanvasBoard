@@ -27,3 +27,6 @@ build_metadata.AdditionalFiles.SourceItemGroup = AvaloniaXaml
 
 [/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/Views/Board/BoardView.axaml]
 build_metadata.AdditionalFiles.SourceItemGroup = AvaloniaXaml
+
+[/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/Views/Board/NoteView.axaml]
+build_metadata.AdditionalFiles.SourceItemGroup = AvaloniaXaml

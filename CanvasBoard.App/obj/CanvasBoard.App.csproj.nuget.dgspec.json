@@ -57,6 +57,10 @@
             "Avalonia.Themes.Fluent": {
               "target": "Package",
               "version": "[11.3.9, )"
+            },
+            "Markdown.Avalonia": {
+              "target": "Package",
+              "version": "[11.0.2, )"
             }
           },
           "imports": [

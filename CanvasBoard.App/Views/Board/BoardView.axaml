@@ -47,29 +47,12 @@
                          Canvas.Left="-1" Canvas.Top="-5"
                          Fill="Red" />
 
-              <!-- Sample “image” rectangle somewhere else -->
-              <Rectangle Width="250" Height="180"
-                         Canvas.Left="150" Canvas.Top="150"
-                         Fill="#555555"
-                         Stroke="#AAAAAA"
-                         StrokeThickness="2" />
             </Canvas>
 
-            <!-- LAYER 2: markdown (on top) -->
-            <Canvas x:Name="TextLayer"
+            <!-- LAYER 2: notes (markdown boxes) -->
+            <Canvas x:Name="NoteLayer"
                     HorizontalAlignment="Stretch"
-                    VerticalAlignment="Stretch"
-                    IsHitTestVisible="False">
-              <!-- Sample text over the grey rectangle -->
-              <Border Canvas.Left="160" Canvas.Top="160"
-                      Background="#00FFFFFF"
-                      Padding="0">
-                <TextBlock Text="## Note&#10;Hello over image."
-                           Foreground="White"
-                           FontSize="16"
-                           TextWrapping="Wrap" />
-              </Border>
-            </Canvas>
+                    VerticalAlignment="Stretch" />
 
           </Grid>
         </Grid>

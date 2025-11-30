@@ -19,6 +19,7 @@ public partial class BoardView : UserControl
     private Grid _viewport = null!;
     private MatrixTransform _viewTransform = null!;
     private Canvas _imageLayer = null!;
+    private Canvas _noteLayer = null!;
 
     // world -> screen:  screen = world * _zoom + _offset
     private double _zoom = 1.0;
@@ -31,25 +32,28 @@ public partial class BoardView : UserControl
     private const double MaxZoom = 4.0;
     private const double ZoomFactorStep = 0.1; // 10% per wheel tick
 
-    // Multi-selection state
+    // Selection state (images + notes)
     private readonly HashSet<Image> _selectedImages = new();
+    private readonly HashSet<NoteView> _selectedNotes = new();
+
     private Border? _selectionOutline;
     private readonly Border[] _resizeHandles = new Border[4];
 
     private bool _isResizingSelection;
     private int _activeHandleIndex = -1;
 
-    // For group resize
     private Rect _originalGroupRect;
     private Dictionary<Image, Rect> _originalImageRects = new();
+    private Dictionary<NoteView, Rect> _originalNoteRects = new();
 
     // Drag-move selection
     private bool _isDraggingSelection;
     private Point _dragStartWorld;
     private Dictionary<Image, Point> _dragStartImageTopLefts = new();
+    private Dictionary<NoteView, Point> _dragStartNoteTopLefts = new();
 
-    private int _zCounter = 0; // NEW
-
+    // Z-order
+    private int _zCounter = 0;
 
     public BoardView()
     {
@@ -65,11 +69,13 @@ public partial class BoardView : UserControl
 
         _imageLayer = this.FindControl<Canvas>("ImageLayer")
                       ?? throw new InvalidOperationException("ImageLayer not found.");
+        _noteLayer = this.FindControl<Canvas>("NoteLayer")
+                     ?? throw new InvalidOperationException("NoteLayer not found.");
 
         ApplyTransform();
         CreateSelectionVisuals();
 
-        _boardHost.KeyDown += OnBoardHostKeyDownImages;
+        _boardHost.KeyDown += OnBoardHostKeyDown;
         _boardHost.PointerWheelChanged += OnPointerWheelChanged;
         _boardHost.PointerPressed += OnPointerPressed;
         _boardHost.PointerMoved += OnPointerMoved;
@@ -87,13 +93,9 @@ public partial class BoardView : UserControl
 
     // ============= TRANSFORM =============
 
-    /// <summary>
-    /// screen = world * _zoom + _offset
-    /// x' = x * M11 + y * M21 + M31
-    /// y' = x * M12 + y * M22 + M32
-    /// </summary>
     private void ApplyTransform()
     {
+        // screen = world * _zoom + _offset
         _viewTransform.Matrix = new Matrix(
             _zoom,       // M11
             0,           // M12
@@ -158,9 +160,7 @@ public partial class BoardView : UserControl
             return;
         }
 
-        // Left-click on empty background → deselect.
-        // Clicks on images/handles are handled by their own handlers and mark e.Handled,
-        // so this only runs when we hit empty space.
+        // Left-click on empty background → deselect (clicks on nodes mark e.Handled)
         if (pt.Properties.IsLeftButtonPressed && !e.Handled)
         {
             ClearSelection();
@@ -170,7 +170,7 @@ public partial class BoardView : UserControl
     private void OnPointerMoved(object? sender, PointerEventArgs e)
     {
         // --- Resizing selection ---
-        if (_isResizingSelection && _selectedImages.Count > 0)
+        if (_isResizingSelection && (_selectedImages.Count > 0 || _selectedNotes.Count > 0))
         {
             var screen = e.GetPosition(_boardHost);
             var world = ScreenToWorld(screen);
@@ -179,7 +179,7 @@ public partial class BoardView : UserControl
         }
 
         // --- Dragging selection ---
-        if (_isDraggingSelection && _selectedImages.Count > 0)
+        if (_isDraggingSelection && (_selectedImages.Count > 0 || _selectedNotes.Count > 0))
         {
             var screen = e.GetPosition(_boardHost);
             var world = ScreenToWorld(screen);
@@ -192,6 +192,15 @@ public partial class BoardView : UserControl
                 var newPos = new Point(startPos.X + delta.X, startPos.Y + delta.Y);
                 Canvas.SetLeft(img, newPos.X);
                 Canvas.SetTop(img, newPos.Y);
+            }
+
+            foreach (var kvp in _dragStartNoteTopLefts)
+            {
+                var note = kvp.Key;
+                var startPos = kvp.Value;
+                var newPos = new Point(startPos.X + delta.X, startPos.Y + delta.Y);
+                Canvas.SetLeft(note, newPos.X);
+                Canvas.SetTop(note, newPos.Y);
             }
 
             UpdateSelectionVisuals();
@@ -259,17 +268,29 @@ public partial class BoardView : UserControl
         }
     }
 
-    // ============= CLIPBOARD: CTRL+V =============
+    // ============= KEYBOARD: CTRL+V (image), CTRL+N (note) =============
 
-    private async void OnBoardHostKeyDownImages(object? sender, KeyEventArgs e)
+    private async void OnBoardHostKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.Key == Key.V &&
-            (e.KeyModifiers & KeyModifiers.Control) == KeyModifiers.Control)
+        if ((e.KeyModifiers & KeyModifiers.Control) == KeyModifiers.Control)
         {
-            await PasteImageFromClipboardAsync();
-            e.Handled = true;
+            if (e.Key == Key.V)
+            {
+                await PasteImageFromClipboardAsync();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.N)
+            {
+                AddNoteAtViewCenter();
+                e.Handled = true;
+                return;
+            }
         }
     }
+
+    // ============= CLIPBOARD: CTRL+V IMAGE =============
 
     private async Task PasteImageFromClipboardAsync()
     {
@@ -278,7 +299,7 @@ public partial class BoardView : UserControl
         if (clipboard is null)
             return;
 
-        // Try real bitmap from clipboard
+        // Try bitmap
         var bmp = await clipboard.TryGetBitmapAsync();
         if (bmp is not null)
         {
@@ -288,7 +309,7 @@ public partial class BoardView : UserControl
             return;
         }
 
-        // Fallback: text URL
+        // Fallback: image URL
         var text = await clipboard.TryGetTextAsync();
         if (string.IsNullOrWhiteSpace(text))
             return;
@@ -323,7 +344,7 @@ public partial class BoardView : UserControl
                lower.EndsWith(".webp");
     }
 
-    // ============= DRAG & DROP =============
+    // ============= DRAG & DROP IMAGES =============
 
     private async void OnBoardHostDropImages(object? sender, DragEventArgs e)
     {
@@ -332,7 +353,7 @@ public partial class BoardView : UserControl
         var screenPos = e.GetPosition(_boardHost);
         var worldPos = ScreenToWorld(screenPos);
 
-        // 1) Local files
+        // Local files
         if (data.Contains(DataFormats.FileNames))
         {
             var fileNames = data.GetFileNames();
@@ -352,7 +373,7 @@ public partial class BoardView : UserControl
                     }
                     catch
                     {
-                        // ignore single file errors
+                        // ignore
                     }
                 }
             }
@@ -361,7 +382,7 @@ public partial class BoardView : UserControl
             return;
         }
 
-        // 2) Text drop: URL
+        // Text drop: URL
         if (data.Contains(DataFormats.Text))
         {
             var text = data.GetText();
@@ -397,6 +418,8 @@ public partial class BoardView : UserControl
                lower.EndsWith(".webp");
     }
 
+    // ============= IMAGE & NOTE CREATION =============
+
     private void AddImageFromBitmap(Bitmap bitmap, Point worldPos)
     {
         var img = new Image
@@ -416,118 +439,35 @@ public partial class BoardView : UserControl
         _imageLayer.Children.Add(img);
     }
 
-    // ============= MULTI-SELECTION + RESIZE + MOVE =============
-
-    private void CreateSelectionVisuals()
+    private void AddNoteAtViewCenter()
     {
-        _selectionOutline = new Border
+        var centerScreen = _boardHost.Bounds.Center;
+        var centerWorld = ScreenToWorld(centerScreen);
+
+        var note = new NoteView
         {
-            BorderBrush = Brushes.DeepSkyBlue,
-            BorderThickness = new Thickness(2),
-            Background = null,
-            IsHitTestVisible = false
+            Width = 300,
+            Height = 200,
+            Text = "## New note\nEdit me."
         };
-        _selectionOutline.IsVisible = false;
-        _imageLayer.Children.Add(_selectionOutline);
 
-        // 0=TL, 1=TR, 2=BR, 3=BL
-        for (int i = 0; i < 4; i++)
-        {
-            var handle = new Border
-            {
-                Width = 10,
-                Height = 10,
-                Background = Brushes.White,
-                BorderBrush = Brushes.Black,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(2)
-            };
-            handle.Tag = i;
-            handle.IsVisible = false;
+        var pos = new Point(centerWorld.X - note.Width / 2, centerWorld.Y - note.Height / 2);
+        Canvas.SetLeft(note, pos.X);
+        Canvas.SetTop(note, pos.Y);
 
-            handle.PointerPressed += OnResizeHandlePointerPressed;
-            handle.PointerEntered += OnResizeHandlePointerEntered;
-            handle.PointerExited += OnResizeHandlePointerExited;
+        note.ZIndex = _zCounter++;
 
-            _imageLayer.Children.Add(handle);
-            _resizeHandles[i] = handle;
-        }
+        note.PointerPressed += OnNotePointerPressed;
+
+        _noteLayer.Children.Add(note);
     }
 
-    private void OnImagePointerPressed(object? sender, PointerPressedEventArgs e)
-    {
-        if (sender is not Image img)
-            return;
-
-        var point = e.GetCurrentPoint(img);
-        if (!point.Properties.IsLeftButtonPressed)
-            return;
-
-        var mods = e.KeyModifiers;
-
-        if ((mods & KeyModifiers.Shift) == KeyModifiers.Shift)
-        {
-            // SHIFT: toggle image in selection
-            if (_selectedImages.Contains(img))
-                _selectedImages.Remove(img);
-            else
-                _selectedImages.Add(img);
-
-            if (_selectedImages.Count == 0)
-            {
-                ClearSelection();
-            }
-            else
-            {
-                BringSelectionToFront();
-                UpdateSelectionVisuals();
-            }
-        }
-        else
-        {
-            // No shift:
-            if (!_selectedImages.Contains(img))
-            {
-                // Clicked outside current group: switch to single selection
-                _selectedImages.Clear();
-                _selectedImages.Add(img);
-            }
-            // If it's already in the group, keep the whole selection as-is
-
-            if (_selectedImages.Count > 0)
-                BringSelectionToFront();
-
-            UpdateSelectionVisuals();
-        }
-
-        // Start drag-move of the whole selection
-        if (_selectedImages.Count > 0)
-        {
-            _isDraggingSelection = true;
-            _isResizingSelection = false;
-            _activeHandleIndex = -1;
-
-            var screen = e.GetPosition(_boardHost);
-            _dragStartWorld = ScreenToWorld(screen);
-
-            _dragStartImageTopLefts = new Dictionary<Image, Point>();
-            foreach (var sel in _selectedImages)
-            {
-                _dragStartImageTopLefts[sel] = new Point(
-                    Canvas.GetLeft(sel),
-                    Canvas.GetTop(sel)
-                );
-            }
-
-            e.Pointer.Capture(_boardHost);
-        }
-
-        e.Handled = true;
-    }
+    // ============= SELECTION HELPERS =============
 
     private void ClearSelection()
     {
         _selectedImages.Clear();
+        _selectedNotes.Clear();
         UpdateSelectionVisuals();
     }
 
@@ -537,6 +477,15 @@ public partial class BoardView : UserControl
         double top = Canvas.GetTop(img);
         double width = img.Width;
         double height = img.Height;
+        return new Rect(left, top, width, height);
+    }
+
+    private Rect GetNoteRect(NoteView note)
+    {
+        double left = Canvas.GetLeft(note);
+        double top = Canvas.GetTop(note);
+        double width = note.Width;
+        double height = note.Height;
         return new Rect(left, top, width, height);
     }
 
@@ -565,25 +514,30 @@ public partial class BoardView : UserControl
             }
         }
 
+        foreach (var note in _selectedNotes)
+        {
+            var r = GetNoteRect(note);
+            if (first)
+            {
+                first = false;
+                minX = r.X;
+                minY = r.Y;
+                maxX = r.X + r.Width;
+                maxY = r.Y + r.Height;
+            }
+            else
+            {
+                minX = Math.Min(minX, r.X);
+                minY = Math.Min(minY, r.Y);
+                maxX = Math.Max(maxX, r.X + r.Width);
+                maxY = Math.Max(maxY, r.Y + r.Height);
+            }
+        }
+
         if (first)
             return new Rect(0, 0, 0, 0);
 
         return new Rect(minX, minY, maxX - minX, maxY - minY);
-    }
-
-    private void BringSelectionToFront()
-    {
-        foreach (var img in _selectedImages)
-        {
-            img.ZIndex = _zCounter++;
-        }
-
-        if (_selectionOutline != null)
-            _selectionOutline.ZIndex = int.MaxValue - 1;
-
-        foreach (var h in _resizeHandles)
-            if (h != null)
-                h.ZIndex = int.MaxValue;
     }
 
     private void UpdateSelectionVisuals()
@@ -591,7 +545,7 @@ public partial class BoardView : UserControl
         if (_selectionOutline == null)
             return;
 
-        if (_selectedImages.Count == 0)
+        if (_selectedImages.Count == 0 && _selectedNotes.Count == 0)
         {
             _selectionOutline.IsVisible = false;
             foreach (var h in _resizeHandles)
@@ -607,7 +561,6 @@ public partial class BoardView : UserControl
                 if (h != null) h.IsVisible = false;
             return;
         }
-
 
         Canvas.SetLeft(_selectionOutline, rect.X - 2);
         Canvas.SetTop(_selectionOutline, rect.Y - 2);
@@ -637,6 +590,221 @@ public partial class BoardView : UserControl
         }
     }
 
+    private void CreateSelectionVisuals()
+    {
+        _selectionOutline = new Border
+        {
+            BorderBrush = Brushes.DeepSkyBlue,
+            BorderThickness = new Thickness(2),
+            Background = null,
+            IsHitTestVisible = false
+        };
+        _selectionOutline.IsVisible = false;
+        _imageLayer.Children.Add(_selectionOutline);
+
+        for (int i = 0; i < 4; i++)
+        {
+            var handle = new Border
+            {
+                Width = 10,
+                Height = 10,
+                Background = Brushes.White,
+                BorderBrush = Brushes.Black,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(2)
+            };
+            handle.Tag = i;
+            handle.IsVisible = false;
+
+            handle.PointerPressed += OnResizeHandlePointerPressed;
+            handle.PointerEntered += OnResizeHandlePointerEntered;
+            handle.PointerExited += OnResizeHandlePointerExited;
+
+            _imageLayer.Children.Add(handle);
+            _resizeHandles[i] = handle;
+        }
+    }
+
+    private void BringSelectionToFront()
+    {
+        foreach (var img in _selectedImages)
+            img.ZIndex = _zCounter++;
+
+        foreach (var note in _selectedNotes)
+            note.ZIndex = _zCounter++;
+
+        if (_selectionOutline != null)
+            _selectionOutline.ZIndex = int.MaxValue - 1;
+
+        foreach (var h in _resizeHandles)
+            if (h != null)
+                h.ZIndex = int.MaxValue;
+    }
+
+    // ============= IMAGE CLICK / SELECTION =============
+
+    private void OnImagePointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not Image img)
+            return;
+
+        var point = e.GetCurrentPoint(img);
+        if (!point.Properties.IsLeftButtonPressed)
+            return;
+
+        var mods = e.KeyModifiers;
+
+        if ((mods & KeyModifiers.Shift) == KeyModifiers.Shift)
+        {
+            if (_selectedImages.Contains(img))
+                _selectedImages.Remove(img);
+            else
+                _selectedImages.Add(img);
+
+            if (_selectedImages.Count == 0 && _selectedNotes.Count == 0)
+            {
+                ClearSelection();
+            }
+            else
+            {
+                BringSelectionToFront();
+                UpdateSelectionVisuals();
+            }
+        }
+        else
+        {
+            if (!_selectedImages.Contains(img) || _selectedNotes.Count > 0)
+            {
+                _selectedImages.Clear();
+                _selectedNotes.Clear();
+                _selectedImages.Add(img);
+            }
+
+            if (_selectedImages.Count > 0 || _selectedNotes.Count > 0)
+                BringSelectionToFront();
+
+            UpdateSelectionVisuals();
+        }
+
+        if (_selectedImages.Count > 0 || _selectedNotes.Count > 0)
+        {
+            _isDraggingSelection = true;
+            _isResizingSelection = false;
+            _activeHandleIndex = -1;
+
+            var screen = e.GetPosition(_boardHost);
+            _dragStartWorld = ScreenToWorld(screen);
+
+            _dragStartImageTopLefts = new Dictionary<Image, Point>();
+            _dragStartNoteTopLefts = new Dictionary<NoteView, Point>();
+
+            foreach (var sel in _selectedImages)
+            {
+                _dragStartImageTopLefts[sel] = new Point(
+                    Canvas.GetLeft(sel),
+                    Canvas.GetTop(sel)
+                );
+            }
+
+            foreach (var sel in _selectedNotes)
+            {
+                _dragStartNoteTopLefts[sel] = new Point(
+                    Canvas.GetLeft(sel),
+                    Canvas.GetTop(sel)
+                );
+            }
+
+            e.Pointer.Capture(_boardHost);
+        }
+
+        e.Handled = true;
+    }
+
+    // ============= NOTE CLICK / SELECTION =============
+
+    private void OnNotePointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not NoteView note)
+            return;
+
+        // If the note is currently being edited, ignore this so text editing works normally
+        if (note.IsEditing)
+            return;
+
+        var point = e.GetCurrentPoint(note);
+        if (!point.Properties.IsLeftButtonPressed)
+            return;
+
+        var mods = e.KeyModifiers;
+
+        if ((mods & KeyModifiers.Shift) == KeyModifiers.Shift)
+        {
+            if (_selectedNotes.Contains(note))
+                _selectedNotes.Remove(note);
+            else
+                _selectedNotes.Add(note);
+
+            if (_selectedImages.Count == 0 && _selectedNotes.Count == 0)
+            {
+                ClearSelection();
+            }
+            else
+            {
+                BringSelectionToFront();
+                UpdateSelectionVisuals();
+            }
+        }
+        else
+        {
+            if (!_selectedNotes.Contains(note) || _selectedImages.Count > 0)
+            {
+                _selectedImages.Clear();
+                _selectedNotes.Clear();
+                _selectedNotes.Add(note);
+            }
+
+            if (_selectedImages.Count > 0 || _selectedNotes.Count > 0)
+                BringSelectionToFront();
+
+            UpdateSelectionVisuals();
+        }
+
+        if (_selectedImages.Count > 0 || _selectedNotes.Count > 0)
+        {
+            _isDraggingSelection = true;
+            _isResizingSelection = false;
+            _activeHandleIndex = -1;
+
+            var screen = e.GetPosition(_boardHost);
+            _dragStartWorld = ScreenToWorld(screen);
+
+            _dragStartImageTopLefts = new Dictionary<Image, Point>();
+            _dragStartNoteTopLefts = new Dictionary<NoteView, Point>();
+
+            foreach (var sel in _selectedImages)
+            {
+                _dragStartImageTopLefts[sel] = new Point(
+                    Canvas.GetLeft(sel),
+                    Canvas.GetTop(sel)
+                );
+            }
+
+            foreach (var sel in _selectedNotes)
+            {
+                _dragStartNoteTopLefts[sel] = new Point(
+                    Canvas.GetLeft(sel),
+                    Canvas.GetTop(sel)
+                );
+            }
+
+            e.Pointer.Capture(_boardHost);
+        }
+
+        e.Handled = true;
+    }
+
+    // ============= RESIZE HANDLES (GROUP) =============
+
     private void OnResizeHandlePointerEntered(object? sender, PointerEventArgs e)
     {
         if (sender is not Border)
@@ -657,7 +825,7 @@ public partial class BoardView : UserControl
     {
         if (sender is not Border handle)
             return;
-        if (_selectedImages.Count == 0)
+        if (_selectedImages.Count == 0 && _selectedNotes.Count == 0)
             return;
 
         var pt = e.GetCurrentPoint(handle);
@@ -673,19 +841,23 @@ public partial class BoardView : UserControl
 
         _originalGroupRect = GetGroupRect();
         _originalImageRects = new Dictionary<Image, Rect>();
+        _originalNoteRects = new Dictionary<NoteView, Rect>();
+
         foreach (var img in _selectedImages)
             _originalImageRects[img] = GetImageRect(img);
+
+        foreach (var note in _selectedNotes)
+            _originalNoteRects[note] = GetNoteRect(note);
 
         e.Pointer.Capture(_boardHost);
         e.Handled = true;
     }
 
-    /// <summary>
-    /// Uniform (aspect-preserving) resize of the whole selection around opposite group corner.
-    /// </summary>
     private void ResizeSelection(Point pointerWorld)
     {
-        if (_selectedImages.Count == 0 || _activeHandleIndex < 0)
+        if (_selectedImages.Count == 0 && _selectedNotes.Count == 0)
+            return;
+        if (_activeHandleIndex < 0)
             return;
 
         var r = _originalGroupRect;
@@ -723,12 +895,15 @@ public partial class BoardView : UserControl
                 return;
         }
 
+        // Vector from opposite corner to original corner (for uniform image scale)
         var v = new Vector(origCorner.X - oppCorner.X, origCorner.Y - oppCorner.Y);
         if (Math.Abs(v.X) < 1e-6 && Math.Abs(v.Y) < 1e-6)
             return;
 
+        // Vector from opposite corner to pointer
         var p = new Vector(pointerWorld.X - oppCorner.X, pointerWorld.Y - oppCorner.Y);
 
+        // Uniform scalar for images
         double dot_vp = v.X * p.X + v.Y * p.Y;
         double dot_vv = v.X * v.X + v.Y * v.Y;
 
@@ -745,7 +920,32 @@ public partial class BoardView : UserControl
         if (s < minScale)
             s = minScale;
 
-        // For each image, scale its original rect about the same oppCorner
+        // --- Anisotropic factors for notes (sx, sy) ---
+        double dxOrig = origCorner.X - oppCorner.X;
+        double dyOrig = origCorner.Y - oppCorner.Y;
+        double dxPtr = pointerWorld.X - oppCorner.X;
+        double dyPtr = pointerWorld.Y - oppCorner.Y;
+
+        double sx, sy;
+
+        if (Math.Abs(dxOrig) < 1e-6)
+            sx = s;                        // fallback to uniform if no horizontal span
+        else
+            sx = dxPtr / dxOrig;
+
+        if (Math.Abs(dyOrig) < 1e-6)
+            sy = s;                        // fallback to uniform if no vertical span
+        else
+            sy = dyPtr / dyOrig;
+
+        // Prevent flipping and tiny sizes
+        if (sx <= 0) sx = minScale;
+        if (sy <= 0) sy = minScale;
+
+        sx = Math.Max(sx, minScale);
+        sy = Math.Max(sy, minScale);
+
+        // ---------- IMAGES: uniform scale (s) ----------
         foreach (var kvp in _originalImageRects)
         {
             var img = kvp.Key;
@@ -774,7 +974,6 @@ public partial class BoardView : UserControl
             double newWidth = newRight - newLeft;
             double newHeight = newBottom - newTop;
 
-            // Avoid degenerate
             if (newWidth < 1 || newHeight < 1)
                 continue;
 
@@ -784,6 +983,45 @@ public partial class BoardView : UserControl
             img.Height = newHeight;
         }
 
+        // ---------- NOTES: non-uniform scale (sx, sy) ----------
+        foreach (var kvp in _originalNoteRects)
+        {
+            var note = kvp.Key;
+            var noteRect = kvp.Value;
+
+            var tlNote = new Point(noteRect.X, noteRect.Y);
+            var brNote = new Point(noteRect.X + noteRect.Width, noteRect.Y + noteRect.Height);
+
+            var vTL = new Vector(tlNote.X - oppCorner.X, tlNote.Y - oppCorner.Y);
+            var vBR = new Vector(brNote.X - oppCorner.X, brNote.Y - oppCorner.Y);
+
+            var newTL = new Point(
+                oppCorner.X + vTL.X * sx,
+                oppCorner.Y + vTL.Y * sy
+            );
+            var newBR = new Point(
+                oppCorner.X + vBR.X * sx,
+                oppCorner.Y + vBR.Y * sy
+            );
+
+            double newLeft = Math.Min(newTL.X, newBR.X);
+            double newTop = Math.Min(newTL.Y, newBR.Y);
+            double newRight = Math.Max(newTL.X, newBR.X);
+            double newBottom = Math.Max(newTL.Y, newBR.Y);
+
+            double newWidth = newRight - newLeft;
+            double newHeight = newBottom - newTop;
+
+            if (newWidth < 1 || newHeight < 1)
+                continue;
+
+            Canvas.SetLeft(note, newLeft);
+            Canvas.SetTop(note, newTop);
+            note.Width = newWidth;
+            note.Height = newHeight;
+        }
+
         UpdateSelectionVisuals();
     }
+
 }
