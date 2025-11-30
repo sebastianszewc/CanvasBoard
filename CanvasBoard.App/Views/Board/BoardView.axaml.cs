@@ -3,15 +3,16 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Shapes;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
+using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
-using Avalonia.Interactivity;
-using System.Globalization;
 
 namespace CanvasBoard.App.Views.Board;
 
@@ -20,11 +21,15 @@ public partial class BoardView : UserControl
     private Grid _boardHost = null!;
     private Grid _viewport = null!;
     private MatrixTransform _viewTransform = null!;
+    private Canvas _gridLayer = null!;
     private Canvas _imageLayer = null!;
     private Canvas _noteLayer = null!;
 
+    private CheckBox _gridCheckBox = null!;
     private CheckBox _snapCheckBox = null!;
     private TextBox _snapSizeBox = null!;
+
+    private bool _showGrid = false;
     private bool _snapToGrid = false;
     private double _snapSize = 50.0;
 
@@ -74,15 +79,23 @@ public partial class BoardView : UserControl
         _viewTransform = _viewport.RenderTransform as MatrixTransform
                          ?? throw new InvalidOperationException("Viewport.RenderTransform must be MatrixTransform.");
 
+        _gridLayer = this.FindControl<Canvas>("GridLayer")
+                    ?? throw new InvalidOperationException("GridLayer not found.");
         _imageLayer = this.FindControl<Canvas>("ImageLayer")
                       ?? throw new InvalidOperationException("ImageLayer not found.");
         _noteLayer = this.FindControl<Canvas>("NoteLayer")
                      ?? throw new InvalidOperationException("NoteLayer not found.");
 
+        _gridCheckBox = this.FindControl<CheckBox>("GridCheckBox")
+                        ?? throw new InvalidOperationException("GridCheckBox not found.");
         _snapCheckBox = this.FindControl<CheckBox>("SnapCheckBox")
                         ?? throw new InvalidOperationException("SnapCheckBox not found.");
         _snapSizeBox = this.FindControl<TextBox>("SnapSizeBox")
                         ?? throw new InvalidOperationException("SnapSizeBox not found.");
+
+        _gridCheckBox.IsChecked = false;
+        _gridCheckBox.Checked += (_, _) => { _showGrid = true; UpdateGrid(); };
+        _gridCheckBox.Unchecked += (_, _) => { _showGrid = false; UpdateGrid(); };
 
         _snapCheckBox.IsChecked = false;
         _snapCheckBox.Checked += (_, _) => _snapToGrid = true;
@@ -101,6 +114,7 @@ public partial class BoardView : UserControl
 
         ApplyTransform();
         CreateSelectionVisuals();
+        UpdateGrid();
 
         _boardHost.KeyDown += OnBoardHostKeyDown;
         _boardHost.PointerWheelChanged += OnPointerWheelChanged;
@@ -112,6 +126,13 @@ public partial class BoardView : UserControl
         DragDrop.SetAllowDrop(_boardHost, true);
         _boardHost.AddHandler(DragDrop.DropEvent, OnBoardHostDropImages);
     }
+
+    private void InitializeComponent()
+    {
+        AvaloniaXamlLoader.Load(this);
+    }
+
+    // ============= GRID =============
 
     private void OnSnapSizeBoxChanged(object? sender, RoutedEventArgs? e)
     {
@@ -127,6 +148,8 @@ public partial class BoardView : UserControl
         {
             _snapSizeBox.Text = _snapSize.ToString("0.##", CultureInfo.InvariantCulture);
         }
+
+        UpdateGrid();
     }
 
     private double SnapValue(double value)
@@ -135,6 +158,14 @@ public partial class BoardView : UserControl
             return value;
 
         return Math.Round(value / _snapSize) * _snapSize;
+    }
+
+    private Point SnapPoint(Point p)
+    {
+        if (_snapSize <= 0)
+            return p;
+
+        return new Point(SnapValue(p.X), SnapValue(p.Y));
     }
 
     private void SnapSelectionToGrid()
@@ -161,17 +192,107 @@ public partial class BoardView : UserControl
         UpdateSelectionVisuals();
     }
 
-    private Point SnapPoint(Point p)
+    private void UpdateGrid()
     {
-        if (_snapSize <= 0)
-            return p;
+        if (_gridLayer == null || _boardHost == null)
+            return;
 
-        return new Point(SnapValue(p.X), SnapValue(p.Y));
-    }
+        _gridLayer.Children.Clear();
 
-    private void InitializeComponent()
-    {
-        AvaloniaXamlLoader.Load(this);
+        if (!_showGrid)
+            return;
+
+        double grid = _snapSize > 0 ? _snapSize : 50.0;
+
+        var bounds = _boardHost.Bounds;
+        var worldTL = ScreenToWorld(bounds.TopLeft);
+        var worldBR = ScreenToWorld(bounds.BottomRight);
+
+        double xMin = Math.Min(worldTL.X, worldBR.X);
+        double xMax = Math.Max(worldTL.X, worldBR.X);
+        double yMin = Math.Min(worldTL.Y, worldBR.Y);
+        double yMax = Math.Max(worldTL.Y, worldBR.Y);
+
+        // Expand a bit to avoid edge clipping
+        xMin -= grid; xMax += grid;
+        yMin -= grid; yMax += grid;
+
+        var thin = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));   // faint
+        var axis = new SolidColorBrush(Color.FromArgb(120, 255, 255, 255));  // stronger
+        double thinWidth = 0.5;
+        double axisWidth = 1.5;
+
+        // Vertical grid lines
+        double startX = Math.Floor(xMin / grid) * grid;
+        for (double x = startX; x <= xMax; x += grid)
+        {
+            bool isAxis = Math.Abs(x) < grid * 0.01;
+            var line = new Line
+            {
+                StartPoint = new Point(x, yMin),
+                EndPoint = new Point(x, yMax),
+                Stroke = isAxis ? axis : thin,
+                StrokeThickness = isAxis ? axisWidth : thinWidth
+            };
+            _gridLayer.Children.Add(line);
+        }
+
+        // Horizontal grid lines
+        double startY = Math.Floor(yMin / grid) * grid;
+        for (double y = startY; y <= yMax; y += grid)
+        {
+            bool isAxis = Math.Abs(y) < grid * 0.01;
+            var line = new Line
+            {
+                StartPoint = new Point(xMin, y),
+                EndPoint = new Point(xMax, y),
+                Stroke = isAxis ? axis : thin,
+                StrokeThickness = isAxis ? axisWidth : thinWidth
+            };
+            _gridLayer.Children.Add(line);
+        }
+
+        // Axis labels at reasonable interval (every 5 grid steps)
+        double labelStep = grid * 5;
+        if (labelStep <= 0) labelStep = grid;
+
+        // Labels along x-axis (y = 0)
+        if (yMin <= 0 && yMax >= 0)
+        {
+            double startLabelX = Math.Floor(xMin / labelStep) * labelStep;
+            for (double x = startLabelX; x <= xMax; x += labelStep)
+            {
+                if (Math.Abs(x) < 1e-6) continue; // skip 0, we'll label on y-axis instead
+                var tb = new TextBlock
+                {
+                    Text = x.ToString("0"),
+                    FontSize = 10,
+                    Foreground = axis
+                };
+                Canvas.SetLeft(tb, x + 2);
+                Canvas.SetTop(tb, 2); // offset from axis
+                _gridLayer.Children.Add(tb);
+            }
+        }
+
+        // Labels along y-axis (x = 0)
+        if (xMin <= 0 && xMax >= 0)
+        {
+            double startLabelY = Math.Floor(yMin / labelStep) * labelStep;
+            for (double y = startLabelY; y <= yMax; y += labelStep)
+            {
+                if (Math.Abs(y) < 1e-6) continue; // skip 0
+                var tb = new TextBlock
+                {
+                    Text = y.ToString("0"),
+                    FontSize = 10,
+                    Foreground = axis
+                };
+                Canvas.SetLeft(tb, 2); // offset from axis
+                Canvas.SetTop(tb, y + 2);
+                _gridLayer.Children.Add(tb);
+            }
+        }
     }
 
     // ============= TRANSFORM =============
@@ -187,6 +308,7 @@ public partial class BoardView : UserControl
             _offset.X,   // M31
             _offset.Y    // M32
         );
+        UpdateGrid();
     }
 
     private Point ScreenToWorld(Point screen)
@@ -1119,5 +1241,4 @@ public partial class BoardView : UserControl
 
         UpdateSelectionVisuals();
     }
-
 }

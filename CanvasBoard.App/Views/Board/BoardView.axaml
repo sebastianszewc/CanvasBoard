@@ -16,10 +16,13 @@
                       Orientation="Horizontal"
                       VerticalAlignment="Center"
                       Spacing="6">
+            <CheckBox x:Name="GridCheckBox"
+                      Content="Grid"
+                      VerticalAlignment="Center" />
             <CheckBox x:Name="SnapCheckBox"
                       Content="Snap"
                       VerticalAlignment="Center" />
-            <TextBlock Text="Grid:"
+            <TextBlock Text="Size:"
                       VerticalAlignment="Center" />
             <TextBox x:Name="SnapSizeBox"
                     Width="60"
@@ -48,6 +51,12 @@
               <!-- Single matrix we control in code -->
               <MatrixTransform />
             </Grid.RenderTransform>
+
+            <!-- NEW: grid behind everything -->
+            <Canvas x:Name="GridLayer"
+                    HorizontalAlignment="Stretch"
+                    VerticalAlignment="Stretch"
+                    IsHitTestVisible="False" />
 
             <!-- LAYER 1: images -->
             <Canvas x:Name="ImageLayer"
