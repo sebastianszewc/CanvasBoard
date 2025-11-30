@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -30,18 +31,22 @@ public partial class BoardView : UserControl
     private const double MaxZoom = 4.0;
     private const double ZoomFactorStep = 0.1; // 10% per wheel tick
 
-    // Selection + resize state
-    private Image? _selectedImage;
+    // Multi-selection state
+    private readonly HashSet<Image> _selectedImages = new();
     private Border? _selectionOutline;
     private readonly Border[] _resizeHandles = new Border[4];
-    private bool _isResizing;
-    private int _activeHandleIndex = -1;
-    private Rect _originalImageRect;
 
-    // Drag-move state
-    private bool _isDraggingImage;
+    private bool _isResizingSelection;
+    private int _activeHandleIndex = -1;
+
+    // For group resize
+    private Rect _originalGroupRect;
+    private Dictionary<Image, Rect> _originalImageRects = new();
+
+    // Drag-move selection
+    private bool _isDraggingSelection;
     private Point _dragStartWorld;
-    private Point _dragStartImageTopLeft;
+    private Dictionary<Image, Point> _dragStartImageTopLefts = new();
 
     public BoardView()
     {
@@ -77,23 +82,22 @@ public partial class BoardView : UserControl
         AvaloniaXamlLoader.Load(this);
     }
 
+    // ============= TRANSFORM =============
+
     /// <summary>
-    /// Enforce: screen = world * _zoom + _offset
-    /// Matrix layout:
-    ///   x' = x * M11 + y * M21 + M31
-    ///   y' = x * M12 + y * M22 + M32
-    /// so we set:
-    ///   M11 = _zoom, M22 = _zoom, M31 = offset.X, M32 = offset.Y
+    /// screen = world * _zoom + _offset
+    /// x' = x * M11 + y * M21 + M31
+    /// y' = x * M12 + y * M22 + M32
     /// </summary>
     private void ApplyTransform()
     {
         _viewTransform.Matrix = new Matrix(
-            _zoom,       // M11 = scaleX
+            _zoom,       // M11
             0,           // M12
             0,           // M21
-            _zoom,       // M22 = scaleY
-            _offset.X,   // M31 = translateX
-            _offset.Y    // M32 = translateY
+            _zoom,       // M22
+            _offset.X,   // M31
+            _offset.Y    // M32
         );
     }
 
@@ -105,7 +109,8 @@ public partial class BoardView : UserControl
         );
     }
 
-    // ---------- ZOOM: lock point under mouse ----------
+    // ============= ZOOM / PAN / EMPTY-CLICK DESELECT =============
+
     private void OnPointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
         double oldZoom = _zoom;
@@ -114,21 +119,17 @@ public partial class BoardView : UserControl
             ? (1.0 + ZoomFactorStep)
             : 1.0 / (1.0 + ZoomFactorStep);
 
-        double newZoom = oldZoom * factor;
-        newZoom = Math.Clamp(newZoom, MinZoom, MaxZoom);
-
+        double newZoom = Math.Clamp(oldZoom * factor, MinZoom, MaxZoom);
         if (Math.Abs(newZoom - oldZoom) < 0.0001)
             return;
 
         Point mouse = e.GetPosition(_boardHost);
 
-        // World point under mouse BEFORE zoom:
         double worldX = (mouse.X - _offset.X) / oldZoom;
         double worldY = (mouse.Y - _offset.Y) / oldZoom;
 
         _zoom = newZoom;
 
-        // New offset so that world point still maps to same screen position:
         _offset = new Vector(
             mouse.X - worldX * _zoom,
             mouse.Y - worldY * _zoom
@@ -138,7 +139,6 @@ public partial class BoardView : UserControl
         e.Handled = true;
     }
 
-    // ---------- PAN (middle mouse) + DESELECT (left click empty) ----------
     private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
     {
         _boardHost.Focus();
@@ -155,40 +155,42 @@ public partial class BoardView : UserControl
             return;
         }
 
-        // Left-click on empty background → deselect
-        if (pt.Properties.IsLeftButtonPressed)
+        // Left-click on empty background → deselect.
+        // Clicks on images/handles are handled by their own handlers and mark e.Handled,
+        // so this only runs when we hit empty space.
+        if (pt.Properties.IsLeftButtonPressed && !e.Handled)
         {
-            // Clicks on images/handles are handled in their own handlers (they mark e.Handled),
-            // so this only runs when the click hits empty space.
             ClearSelection();
         }
     }
 
     private void OnPointerMoved(object? sender, PointerEventArgs e)
     {
-        // --- Resizing image ---
-        if (_isResizing && _selectedImage != null)
+        // --- Resizing selection ---
+        if (_isResizingSelection && _selectedImages.Count > 0)
         {
             var screen = e.GetPosition(_boardHost);
             var world = ScreenToWorld(screen);
-            ResizeSelectedImage(world);
+            ResizeSelection(world);
             return;
         }
 
-        // --- Dragging image ---
-        if (_isDraggingImage && _selectedImage != null)
+        // --- Dragging selection ---
+        if (_isDraggingSelection && _selectedImages.Count > 0)
         {
             var screen = e.GetPosition(_boardHost);
             var world = ScreenToWorld(screen);
             var delta = world - _dragStartWorld;
 
-            var newPos = new Point(
-                _dragStartImageTopLeft.X + delta.X,
-                _dragStartImageTopLeft.Y + delta.Y
-            );
+            foreach (var kvp in _dragStartImageTopLefts)
+            {
+                var img = kvp.Key;
+                var startPos = kvp.Value;
+                var newPos = new Point(startPos.X + delta.X, startPos.Y + delta.Y);
+                Canvas.SetLeft(img, newPos.X);
+                Canvas.SetTop(img, newPos.Y);
+            }
 
-            Canvas.SetLeft(_selectedImage, newPos.X);
-            Canvas.SetTop(_selectedImage, newPos.Y);
             UpdateSelectionVisuals();
             return;
         }
@@ -207,26 +209,23 @@ public partial class BoardView : UserControl
 
     private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
-        // Stop resizing if active
-        if (_isResizing)
+        if (_isResizingSelection)
         {
-            _isResizing = false;
+            _isResizingSelection = false;
             _activeHandleIndex = -1;
             _boardHost.Cursor = new Cursor(StandardCursorType.Arrow);
             e.Pointer.Capture(null);
             return;
         }
 
-        // Stop image dragging
-        if (_isDraggingImage)
+        if (_isDraggingSelection)
         {
-            _isDraggingImage = false;
+            _isDraggingSelection = false;
             _boardHost.Cursor = new Cursor(StandardCursorType.Arrow);
             e.Pointer.Capture(null);
             return;
         }
 
-        // Stop panning
         if (_isPanning)
         {
             _isPanning = false;
@@ -237,16 +236,16 @@ public partial class BoardView : UserControl
 
     private void OnPointerCaptureLost(object? sender, PointerCaptureLostEventArgs e)
     {
-        if (_isResizing)
+        if (_isResizingSelection)
         {
-            _isResizing = false;
+            _isResizingSelection = false;
             _activeHandleIndex = -1;
             _boardHost.Cursor = new Cursor(StandardCursorType.Arrow);
         }
 
-        if (_isDraggingImage)
+        if (_isDraggingSelection)
         {
-            _isDraggingImage = false;
+            _isDraggingSelection = false;
             _boardHost.Cursor = new Cursor(StandardCursorType.Arrow);
         }
 
@@ -257,11 +256,8 @@ public partial class BoardView : UserControl
         }
     }
 
-    // =========================
-    // IMAGE PASTE + DRAG/DROP
-    // =========================
+    // ============= CLIPBOARD: CTRL+V =============
 
-    // Ctrl+V handler
     private async void OnBoardHostKeyDownImages(object? sender, KeyEventArgs e)
     {
         if (e.Key == Key.V &&
@@ -279,7 +275,7 @@ public partial class BoardView : UserControl
         if (clipboard is null)
             return;
 
-        // 1) Try real bitmap from clipboard
+        // Try real bitmap from clipboard
         var bmp = await clipboard.TryGetBitmapAsync();
         if (bmp is not null)
         {
@@ -289,7 +285,7 @@ public partial class BoardView : UserControl
             return;
         }
 
-        // 2) Fallback: text URL
+        // Fallback: text URL
         var text = await clipboard.TryGetTextAsync();
         if (string.IsNullOrWhiteSpace(text))
             return;
@@ -324,7 +320,8 @@ public partial class BoardView : UserControl
                lower.EndsWith(".webp");
     }
 
-    // Drag & drop handler
+    // ============= DRAG & DROP =============
+
     private async void OnBoardHostDropImages(object? sender, DragEventArgs e)
     {
         var data = e.Data;
@@ -361,7 +358,7 @@ public partial class BoardView : UserControl
             return;
         }
 
-        // 2) Text drop: treat as URL
+        // 2) Text drop: URL
         if (data.Contains(DataFormats.Text))
         {
             var text = data.GetText();
@@ -397,7 +394,6 @@ public partial class BoardView : UserControl
                lower.EndsWith(".webp");
     }
 
-    // Actually add the image node to the canvas (in WORLD coords)
     private void AddImageFromBitmap(Bitmap bitmap, Point worldPos)
     {
         var img = new Image
@@ -415,13 +411,10 @@ public partial class BoardView : UserControl
         _imageLayer.Children.Add(img);
     }
 
-    // =========================
-    // SELECTION + RESIZE + MOVE
-    // =========================
+    // ============= MULTI-SELECTION + RESIZE + MOVE =============
 
     private void CreateSelectionVisuals()
     {
-        // Outline
         _selectionOutline = new Border
         {
             BorderBrush = Brushes.DeepSkyBlue,
@@ -432,7 +425,7 @@ public partial class BoardView : UserControl
         _selectionOutline.IsVisible = false;
         _imageLayer.Children.Add(_selectionOutline);
 
-        // Corner handles (0=TL, 1=TR, 2=BR, 3=BL)
+        // 0=TL, 1=TR, 2=BR, 3=BL
         for (int i = 0; i < 4; i++)
         {
             var handle = new Border
@@ -465,33 +458,62 @@ public partial class BoardView : UserControl
         if (!point.Properties.IsLeftButtonPressed)
             return;
 
-        SelectImage(img);
+        var mods = e.KeyModifiers;
 
-        // Start drag-move
-        _isDraggingImage = true;
-        _isResizing = false;
-        _activeHandleIndex = -1;
+        if ((mods & KeyModifiers.Shift) == KeyModifiers.Shift)
+        {
+            // SHIFT: toggle image in selection
+            if (_selectedImages.Contains(img))
+                _selectedImages.Remove(img);
+            else
+                _selectedImages.Add(img);
 
-        var screen = e.GetPosition(_boardHost);
-        _dragStartWorld = ScreenToWorld(screen);
-        _dragStartImageTopLeft = new Point(
-            Canvas.GetLeft(img),
-            Canvas.GetTop(img)
-        );
+            if (_selectedImages.Count == 0)
+                ClearSelection();
+            else
+                UpdateSelectionVisuals();
+        }
+        else
+        {
+            // No shift:
+            if (!_selectedImages.Contains(img))
+            {
+                // Clicked outside current group: switch to single selection
+                _selectedImages.Clear();
+                _selectedImages.Add(img);
+            }
+            // If it's already in the group, keep the whole selection as-is
+            UpdateSelectionVisuals();
+        }
 
-        e.Pointer.Capture(_boardHost);
+        // Start drag-move of the whole selection
+        if (_selectedImages.Count > 0)
+        {
+            _isDraggingSelection = true;
+            _isResizingSelection = false;
+            _activeHandleIndex = -1;
+
+            var screen = e.GetPosition(_boardHost);
+            _dragStartWorld = ScreenToWorld(screen);
+
+            _dragStartImageTopLefts = new Dictionary<Image, Point>();
+            foreach (var sel in _selectedImages)
+            {
+                _dragStartImageTopLefts[sel] = new Point(
+                    Canvas.GetLeft(sel),
+                    Canvas.GetTop(sel)
+                );
+            }
+
+            e.Pointer.Capture(_boardHost);
+        }
+
         e.Handled = true;
-    }
-
-    private void SelectImage(Image? img)
-    {
-        _selectedImage = img;
-        UpdateSelectionVisuals();
     }
 
     private void ClearSelection()
     {
-        _selectedImage = null;
+        _selectedImages.Clear();
         UpdateSelectionVisuals();
     }
 
@@ -504,12 +526,43 @@ public partial class BoardView : UserControl
         return new Rect(left, top, width, height);
     }
 
+    private Rect GetGroupRect()
+    {
+        bool first = true;
+        double minX = 0, minY = 0, maxX = 0, maxY = 0;
+
+        foreach (var img in _selectedImages)
+        {
+            var r = GetImageRect(img);
+            if (first)
+            {
+                first = false;
+                minX = r.X;
+                minY = r.Y;
+                maxX = r.X + r.Width;
+                maxY = r.Y + r.Height;
+            }
+            else
+            {
+                minX = Math.Min(minX, r.X);
+                minY = Math.Min(minY, r.Y);
+                maxX = Math.Max(maxX, r.X + r.Width);
+                maxY = Math.Max(maxY, r.Y + r.Height);
+            }
+        }
+
+        if (first)
+            return new Rect(0, 0, 0, 0);
+
+        return new Rect(minX, minY, maxX - minX, maxY - minY);
+    }
+
     private void UpdateSelectionVisuals()
     {
         if (_selectionOutline == null)
             return;
 
-        if (_selectedImage == null)
+        if (_selectedImages.Count == 0)
         {
             _selectionOutline.IsVisible = false;
             foreach (var h in _resizeHandles)
@@ -517,16 +570,22 @@ public partial class BoardView : UserControl
             return;
         }
 
-        var rect = GetImageRect(_selectedImage);
+        var rect = GetGroupRect();
+        if (rect.Width <= 0 || rect.Height <= 0)
+        {
+            _selectionOutline.IsVisible = false;
+            foreach (var h in _resizeHandles)
+                if (h != null) h.IsVisible = false;
+            return;
+        }
 
-        // Outline slightly bigger than image
+
         Canvas.SetLeft(_selectionOutline, rect.X - 2);
         Canvas.SetTop(_selectionOutline, rect.Y - 2);
         _selectionOutline.Width = rect.Width + 4;
         _selectionOutline.Height = rect.Height + 4;
         _selectionOutline.IsVisible = true;
 
-        // Corner positions
         var corners = new[]
         {
             new Point(rect.X, rect.Y),                           // TL
@@ -559,7 +618,7 @@ public partial class BoardView : UserControl
 
     private void OnResizeHandlePointerExited(object? sender, PointerEventArgs e)
     {
-        if (_isResizing)
+        if (_isResizingSelection)
             return;
 
         _boardHost.Cursor = new Cursor(StandardCursorType.Arrow);
@@ -567,7 +626,9 @@ public partial class BoardView : UserControl
 
     private void OnResizeHandlePointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (sender is not Border handle || _selectedImage == null)
+        if (sender is not Border handle)
+            return;
+        if (_selectedImages.Count == 0)
             return;
 
         var pt = e.GetCurrentPoint(handle);
@@ -577,24 +638,32 @@ public partial class BoardView : UserControl
         if (handle.Tag is not int index)
             return;
 
-        _isResizing = true;
-        _isDraggingImage = false;
+        _isResizingSelection = true;
+        _isDraggingSelection = false;
         _activeHandleIndex = index;
-        _originalImageRect = GetImageRect(_selectedImage);
+
+        _originalGroupRect = GetGroupRect();
+        _originalImageRects = new Dictionary<Image, Rect>();
+        foreach (var img in _selectedImages)
+            _originalImageRects[img] = GetImageRect(img);
 
         e.Pointer.Capture(_boardHost);
         e.Handled = true;
     }
 
-    // Uniform (aspect-preserving) resize around opposite corner
-    private void ResizeSelectedImage(Point pointerWorld)
+    /// <summary>
+    /// Uniform (aspect-preserving) resize of the whole selection around opposite group corner.
+    /// </summary>
+    private void ResizeSelection(Point pointerWorld)
     {
-        if (_selectedImage == null || _activeHandleIndex < 0)
+        if (_selectedImages.Count == 0 || _activeHandleIndex < 0)
             return;
 
-        var r = _originalImageRect;
+        var r = _originalGroupRect;
+        if (r.Width <= 0 || r.Height <= 0)
+            return;
 
-        // Original corners in WORLD space
+        // Original group corners
         var tl = new Point(r.X, r.Y);
         var tr = new Point(r.X + r.Width, r.Y);
         var br = new Point(r.X + r.Width, r.Y + r.Height);
@@ -625,25 +694,19 @@ public partial class BoardView : UserControl
                 return;
         }
 
-        // Vector from opposite corner to original corner
         var v = new Vector(origCorner.X - oppCorner.X, origCorner.Y - oppCorner.Y);
         if (Math.Abs(v.X) < 1e-6 && Math.Abs(v.Y) < 1e-6)
             return;
 
-        // Vector from opposite corner to pointer
         var p = new Vector(pointerWorld.X - oppCorner.X, pointerWorld.Y - oppCorner.Y);
 
-        // Manual dot products
         double dot_vp = v.X * p.X + v.Y * p.Y;
         double dot_vv = v.X * v.X + v.Y * v.Y;
 
         double s = dot_vp / dot_vv;
-
-        // Disallow flipping for now
         if (s <= 0)
             return;
 
-        // Enforce minimum size while keeping aspect ratio
         const double minSize = 16;
         double minSide = Math.Min(r.Width, r.Height);
         if (minSide <= 0)
@@ -653,24 +716,44 @@ public partial class BoardView : UserControl
         if (s < minScale)
             s = minScale;
 
-        // New dragged corner = oppCorner + s * v
-        var newCorner = new Point(
-            oppCorner.X + v.X * s,
-            oppCorner.Y + v.Y * s
-        );
+        // For each image, scale its original rect about the same oppCorner
+        foreach (var kvp in _originalImageRects)
+        {
+            var img = kvp.Key;
+            var imgRect = kvp.Value;
 
-        double newLeft = Math.Min(oppCorner.X, newCorner.X);
-        double newRight = Math.Max(oppCorner.X, newCorner.X);
-        double newTop = Math.Min(oppCorner.Y, newCorner.Y);
-        double newBottom = Math.Max(oppCorner.Y, newCorner.Y);
+            var tlImg = new Point(imgRect.X, imgRect.Y);
+            var brImg = new Point(imgRect.X + imgRect.Width, imgRect.Y + imgRect.Height);
 
-        double newWidth = newRight - newLeft;
-        double newHeight = newBottom - newTop;
+            var vTL = new Vector(tlImg.X - oppCorner.X, tlImg.Y - oppCorner.Y);
+            var vBR = new Vector(brImg.X - oppCorner.X, brImg.Y - oppCorner.Y);
 
-        Canvas.SetLeft(_selectedImage, newLeft);
-        Canvas.SetTop(_selectedImage, newTop);
-        _selectedImage.Width = newWidth;
-        _selectedImage.Height = newHeight;
+            var newTL = new Point(
+                oppCorner.X + vTL.X * s,
+                oppCorner.Y + vTL.Y * s
+            );
+            var newBR = new Point(
+                oppCorner.X + vBR.X * s,
+                oppCorner.Y + vBR.Y * s
+            );
+
+            double newLeft = Math.Min(newTL.X, newBR.X);
+            double newTop = Math.Min(newTL.Y, newBR.Y);
+            double newRight = Math.Max(newTL.X, newBR.X);
+            double newBottom = Math.Max(newTL.Y, newBR.Y);
+
+            double newWidth = newRight - newLeft;
+            double newHeight = newBottom - newTop;
+
+            // Avoid degenerate
+            if (newWidth < 1 || newHeight < 1)
+                continue;
+
+            Canvas.SetLeft(img, newLeft);
+            Canvas.SetTop(img, newTop);
+            img.Width = newWidth;
+            img.Height = newHeight;
+        }
 
         UpdateSelectionVisuals();
     }
