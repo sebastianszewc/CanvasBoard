@@ -7,12 +7,27 @@
       <Border Background="#222222" Height="40">
         <DockPanel Margin="8,0">
           <TextBlock Text="CanvasBoard"
-                     VerticalAlignment="Center"
-                     Foreground="White"
-                     FontWeight="Bold" />
+                    DockPanel.Dock="Left"
+                    VerticalAlignment="Center"
+                    Foreground="White"
+                    FontWeight="Bold" />
+
+          <StackPanel DockPanel.Dock="Right"
+                      Orientation="Horizontal"
+                      VerticalAlignment="Center"
+                      Spacing="6">
+            <CheckBox x:Name="SnapCheckBox"
+                      Content="Snap"
+                      VerticalAlignment="Center" />
+            <TextBlock Text="Grid:"
+                      VerticalAlignment="Center" />
+            <TextBox x:Name="SnapSizeBox"
+                    Width="60"
+                    Text="50"
+                    VerticalContentAlignment="Center" />
+          </StackPanel>
         </DockPanel>
       </Border>
-
       <!-- Main board area -->
       <Border Grid.Row="1"
               Background="#181818"

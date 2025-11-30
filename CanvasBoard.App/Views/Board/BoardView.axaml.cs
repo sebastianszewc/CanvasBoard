@@ -10,6 +10,8 @@ using Avalonia.Input.Platform;
 using Avalonia.Markup.Xaml;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Interactivity;
+using System.Globalization;
 
 namespace CanvasBoard.App.Views.Board;
 
@@ -20,6 +22,11 @@ public partial class BoardView : UserControl
     private MatrixTransform _viewTransform = null!;
     private Canvas _imageLayer = null!;
     private Canvas _noteLayer = null!;
+
+    private CheckBox _snapCheckBox = null!;
+    private TextBox _snapSizeBox = null!;
+    private bool _snapToGrid = false;
+    private double _snapSize = 50.0;
 
     // world -> screen:  screen = world * _zoom + _offset
     private double _zoom = 1.0;
@@ -72,6 +79,26 @@ public partial class BoardView : UserControl
         _noteLayer = this.FindControl<Canvas>("NoteLayer")
                      ?? throw new InvalidOperationException("NoteLayer not found.");
 
+        _snapCheckBox = this.FindControl<CheckBox>("SnapCheckBox")
+                        ?? throw new InvalidOperationException("SnapCheckBox not found.");
+        _snapSizeBox = this.FindControl<TextBox>("SnapSizeBox")
+                        ?? throw new InvalidOperationException("SnapSizeBox not found.");
+
+        _snapCheckBox.IsChecked = false;
+        _snapCheckBox.Checked += (_, _) => _snapToGrid = true;
+        _snapCheckBox.Unchecked += (_, _) => _snapToGrid = false;
+
+        _snapSizeBox.Text = _snapSize.ToString(CultureInfo.InvariantCulture);
+        _snapSizeBox.LostFocus += OnSnapSizeBoxChanged;
+        _snapSizeBox.KeyDown += (s, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                OnSnapSizeBoxChanged(s, null);
+                e.Handled = true;
+            }
+        };
+
         ApplyTransform();
         CreateSelectionVisuals();
 
@@ -84,6 +111,62 @@ public partial class BoardView : UserControl
 
         DragDrop.SetAllowDrop(_boardHost, true);
         _boardHost.AddHandler(DragDrop.DropEvent, OnBoardHostDropImages);
+    }
+
+    private void OnSnapSizeBoxChanged(object? sender, RoutedEventArgs? e)
+    {
+        if (double.TryParse(_snapSizeBox.Text,
+                            NumberStyles.Float,
+                            CultureInfo.InvariantCulture,
+                            out var v) && v > 0.1)
+        {
+            _snapSize = v;
+            _snapSizeBox.Text = v.ToString("0.##", CultureInfo.InvariantCulture);
+        }
+        else
+        {
+            _snapSizeBox.Text = _snapSize.ToString("0.##", CultureInfo.InvariantCulture);
+        }
+    }
+
+    private double SnapValue(double value)
+    {
+        if (_snapSize <= 0)
+            return value;
+
+        return Math.Round(value / _snapSize) * _snapSize;
+    }
+
+    private void SnapSelectionToGrid()
+    {
+        if (!_snapToGrid || _snapSize <= 0)
+            return;
+
+        foreach (var img in _selectedImages)
+        {
+            var left = Canvas.GetLeft(img);
+            var top = Canvas.GetTop(img);
+            Canvas.SetLeft(img, SnapValue(left));
+            Canvas.SetTop(img, SnapValue(top));
+        }
+
+        foreach (var note in _selectedNotes)
+        {
+            var left = Canvas.GetLeft(note);
+            var top = Canvas.GetTop(note);
+            Canvas.SetLeft(note, SnapValue(left));
+            Canvas.SetTop(note, SnapValue(top));
+        }
+
+        UpdateSelectionVisuals();
+    }
+
+    private Point SnapPoint(Point p)
+    {
+        if (_snapSize <= 0)
+            return p;
+
+        return new Point(SnapValue(p.X), SnapValue(p.Y));
     }
 
     private void InitializeComponent()
@@ -174,6 +257,11 @@ public partial class BoardView : UserControl
         {
             var screen = e.GetPosition(_boardHost);
             var world = ScreenToWorld(screen);
+
+            // Live snapping of the resize handle to the grid
+            if (_snapToGrid && _snapSize > 0)
+                world = SnapPoint(world);
+
             ResizeSelection(world);
             return;
         }
@@ -190,6 +278,10 @@ public partial class BoardView : UserControl
                 var img = kvp.Key;
                 var startPos = kvp.Value;
                 var newPos = new Point(startPos.X + delta.X, startPos.Y + delta.Y);
+
+                if (_snapToGrid && _snapSize > 0)
+                    newPos = SnapPoint(newPos);
+
                 Canvas.SetLeft(img, newPos.X);
                 Canvas.SetTop(img, newPos.Y);
             }
@@ -199,6 +291,10 @@ public partial class BoardView : UserControl
                 var note = kvp.Key;
                 var startPos = kvp.Value;
                 var newPos = new Point(startPos.X + delta.X, startPos.Y + delta.Y);
+
+                if (_snapToGrid && _snapSize > 0)
+                    newPos = SnapPoint(newPos);
+
                 Canvas.SetLeft(note, newPos.X);
                 Canvas.SetTop(note, newPos.Y);
             }
