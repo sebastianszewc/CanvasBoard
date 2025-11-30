@@ -38,6 +38,11 @@ public partial class BoardView : UserControl
     private int _activeHandleIndex = -1;
     private Rect _originalImageRect;
 
+    // Drag-move state
+    private bool _isDraggingImage;
+    private Point _dragStartWorld;
+    private Point _dragStartImageTopLeft;
+
     public BoardView()
     {
         InitializeComponent();
@@ -133,25 +138,35 @@ public partial class BoardView : UserControl
         e.Handled = true;
     }
 
-    // ---------- PAN: middle mouse drag ----------
+    // ---------- PAN (middle mouse) + DESELECT (left click empty) ----------
     private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        // Ensure board gets keyboard focus for Ctrl+V
         _boardHost.Focus();
 
         var pt = e.GetCurrentPoint(_boardHost);
+
+        // Middle mouse → pan
         if (pt.Properties.IsMiddleButtonPressed)
         {
             _isPanning = true;
             _lastPointerPos = pt.Position;
             _boardHost.Cursor = new Cursor(StandardCursorType.SizeAll);
             e.Pointer.Capture(_boardHost);
+            return;
+        }
+
+        // Left-click on empty background → deselect
+        if (pt.Properties.IsLeftButtonPressed)
+        {
+            // Clicks on images/handles are handled in their own handlers (they mark e.Handled),
+            // so this only runs when the click hits empty space.
+            ClearSelection();
         }
     }
 
     private void OnPointerMoved(object? sender, PointerEventArgs e)
     {
-        // --- Resizing has priority ---
+        // --- Resizing image ---
         if (_isResizing && _selectedImage != null)
         {
             var screen = e.GetPosition(_boardHost);
@@ -160,15 +175,33 @@ public partial class BoardView : UserControl
             return;
         }
 
+        // --- Dragging image ---
+        if (_isDraggingImage && _selectedImage != null)
+        {
+            var screen = e.GetPosition(_boardHost);
+            var world = ScreenToWorld(screen);
+            var delta = world - _dragStartWorld;
+
+            var newPos = new Point(
+                _dragStartImageTopLeft.X + delta.X,
+                _dragStartImageTopLeft.Y + delta.Y
+            );
+
+            Canvas.SetLeft(_selectedImage, newPos.X);
+            Canvas.SetTop(_selectedImage, newPos.Y);
+            UpdateSelectionVisuals();
+            return;
+        }
+
         // --- Panning ---
         if (!_isPanning)
             return;
 
         Point current = e.GetPosition(_boardHost);
-        Vector delta = current - _lastPointerPos;
+        Vector panDelta = current - _lastPointerPos;
         _lastPointerPos = current;
 
-        _offset += delta;
+        _offset += panDelta;
         ApplyTransform();
     }
 
@@ -184,13 +217,22 @@ public partial class BoardView : UserControl
             return;
         }
 
-        // Stop panning
-        if (!_isPanning)
+        // Stop image dragging
+        if (_isDraggingImage)
+        {
+            _isDraggingImage = false;
+            _boardHost.Cursor = new Cursor(StandardCursorType.Arrow);
+            e.Pointer.Capture(null);
             return;
+        }
 
-        _isPanning = false;
-        _boardHost.Cursor = new Cursor(StandardCursorType.Arrow);
-        e.Pointer.Capture(null);
+        // Stop panning
+        if (_isPanning)
+        {
+            _isPanning = false;
+            _boardHost.Cursor = new Cursor(StandardCursorType.Arrow);
+            e.Pointer.Capture(null);
+        }
     }
 
     private void OnPointerCaptureLost(object? sender, PointerCaptureLostEventArgs e)
@@ -199,6 +241,12 @@ public partial class BoardView : UserControl
         {
             _isResizing = false;
             _activeHandleIndex = -1;
+            _boardHost.Cursor = new Cursor(StandardCursorType.Arrow);
+        }
+
+        if (_isDraggingImage)
+        {
+            _isDraggingImage = false;
             _boardHost.Cursor = new Cursor(StandardCursorType.Arrow);
         }
 
@@ -368,7 +416,7 @@ public partial class BoardView : UserControl
     }
 
     // =========================
-    // SELECTION + RESIZE
+    // SELECTION + RESIZE + MOVE
     // =========================
 
     private void CreateSelectionVisuals()
@@ -418,6 +466,20 @@ public partial class BoardView : UserControl
             return;
 
         SelectImage(img);
+
+        // Start drag-move
+        _isDraggingImage = true;
+        _isResizing = false;
+        _activeHandleIndex = -1;
+
+        var screen = e.GetPosition(_boardHost);
+        _dragStartWorld = ScreenToWorld(screen);
+        _dragStartImageTopLeft = new Point(
+            Canvas.GetLeft(img),
+            Canvas.GetTop(img)
+        );
+
+        e.Pointer.Capture(_boardHost);
         e.Handled = true;
     }
 
@@ -516,6 +578,7 @@ public partial class BoardView : UserControl
             return;
 
         _isResizing = true;
+        _isDraggingImage = false;
         _activeHandleIndex = index;
         _originalImageRect = GetImageRect(_selectedImage);
 
@@ -523,6 +586,7 @@ public partial class BoardView : UserControl
         e.Handled = true;
     }
 
+    // Uniform (aspect-preserving) resize around opposite corner
     private void ResizeSelectedImage(Point pointerWorld)
     {
         if (_selectedImage == null || _activeHandleIndex < 0)
@@ -610,5 +674,4 @@ public partial class BoardView : UserControl
 
         UpdateSelectionVisuals();
     }
-
 }

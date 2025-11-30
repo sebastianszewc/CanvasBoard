@@ -72,3 +72,4 @@
 /home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.pdb
 /home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.genruntimeconfig.cache
 /home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/ref/CanvasBoard.App.dll
+/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.sourcelink.json
