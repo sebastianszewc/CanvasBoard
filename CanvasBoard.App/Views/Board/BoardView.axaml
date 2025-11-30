@@ -1,0 +1,79 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CanvasBoard.App.Views.Board.BoardView">
+  <Grid>
+    <Grid RowDefinitions="Auto,*">
+      <!-- Top bar -->
+      <Border Background="#222222" Height="40">
+        <DockPanel Margin="8,0">
+          <TextBlock Text="CanvasBoard"
+                     VerticalAlignment="Center"
+                     Foreground="White"
+                     FontWeight="Bold" />
+        </DockPanel>
+      </Border>
+
+      <!-- Main board area -->
+      <Border Grid.Row="1"
+              Background="#181818"
+              ClipToBounds="True">
+        <!-- Viewport: receives mouse events (no transform here) -->
+        <Grid x:Name="BoardHost"
+              Focusable="True"
+              Background="#01000000"
+              HorizontalAlignment="Stretch"
+              VerticalAlignment="Stretch">
+
+          <!-- Inner content that actually gets transformed -->
+          <Grid x:Name="Viewport"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch"
+                RenderTransformOrigin="0,0">
+            <Grid.RenderTransform>
+              <!-- Single matrix we control in code -->
+              <MatrixTransform />
+            </Grid.RenderTransform>
+
+            <!-- LAYER 1: images -->
+            <Canvas x:Name="ImageLayer"
+                    HorizontalAlignment="Stretch"
+                    VerticalAlignment="Stretch">
+
+              <!-- DEBUG: red cross at world origin (0,0) -->
+              <Rectangle Width="10" Height="2"
+                         Canvas.Left="-5" Canvas.Top="-1"
+                         Fill="Red" />
+              <Rectangle Width="2" Height="10"
+                         Canvas.Left="-1" Canvas.Top="-5"
+                         Fill="Red" />
+
+              <!-- Sample “image” rectangle somewhere else -->
+              <Rectangle Width="250" Height="180"
+                         Canvas.Left="150" Canvas.Top="150"
+                         Fill="#555555"
+                         Stroke="#AAAAAA"
+                         StrokeThickness="2" />
+            </Canvas>
+
+            <!-- LAYER 2: markdown (on top) -->
+            <Canvas x:Name="TextLayer"
+                    HorizontalAlignment="Stretch"
+                    VerticalAlignment="Stretch"
+                    IsHitTestVisible="False">
+              <!-- Sample text over the grey rectangle -->
+              <Border Canvas.Left="160" Canvas.Top="160"
+                      Background="#00FFFFFF"
+                      Padding="0">
+                <TextBlock Text="## Note&#10;Hello over image."
+                           Foreground="White"
+                           FontSize="16"
+                           TextWrapping="Wrap" />
+              </Border>
+            </Canvas>
+
+          </Grid>
+        </Grid>
+      </Border>
+    </Grid>
+  </Grid>
+</UserControl>
