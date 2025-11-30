@@ -33,7 +33,7 @@ public partial class BoardView : UserControl
     private bool _snapToGrid = false;
     private double _snapSize = 50.0;
 
-    // world -> screen:  screen = world * _zoom + _offset
+    // world -> screen: screen = world * _zoom + _offset
     private double _zoom = 1.0;
     private Vector _offset = new Vector(0, 0);
 
@@ -41,10 +41,10 @@ public partial class BoardView : UserControl
     private Point _lastPointerPos;
 
     private const double MinZoom = 0.1;
-    private const double MaxZoom = 4.0;
-    private const double ZoomFactorStep = 0.1; // 10% per wheel tick
+    private const double MaxZoom = 20.0;
+    private const double ZoomFactorStep = 0.1;
 
-    // Selection state (images + notes)
+    // Selection state
     private readonly HashSet<Image> _selectedImages = new();
     private readonly HashSet<NoteView> _selectedNotes = new();
 
@@ -94,12 +94,17 @@ public partial class BoardView : UserControl
                         ?? throw new InvalidOperationException("SnapSizeBox not found.");
 
         _gridCheckBox.IsChecked = false;
-        _gridCheckBox.Checked += (_, _) => { _showGrid = true; UpdateGrid(); };
-        _gridCheckBox.Unchecked += (_, _) => { _showGrid = false; UpdateGrid(); };
+        _gridCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            _showGrid = _gridCheckBox.IsChecked == true;
+            UpdateGrid();
+        };
 
         _snapCheckBox.IsChecked = false;
-        _snapCheckBox.Checked += (_, _) => _snapToGrid = true;
-        _snapCheckBox.Unchecked += (_, _) => _snapToGrid = false;
+        _snapCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            _snapToGrid = _snapCheckBox.IsChecked == true;
+        };
 
         _snapSizeBox.Text = _snapSize.ToString(CultureInfo.InvariantCulture);
         _snapSizeBox.LostFocus += OnSnapSizeBoxChanged;
@@ -132,7 +137,7 @@ public partial class BoardView : UserControl
         AvaloniaXamlLoader.Load(this);
     }
 
-    // ============= GRID =============
+    // ---------- GRID / SNAP ----------
 
     private void OnSnapSizeBoxChanged(object? sender, RoutedEventArgs? e)
     {
@@ -213,16 +218,14 @@ public partial class BoardView : UserControl
         double yMin = Math.Min(worldTL.Y, worldBR.Y);
         double yMax = Math.Max(worldTL.Y, worldBR.Y);
 
-        // Expand a bit to avoid edge clipping
         xMin -= grid; xMax += grid;
         yMin -= grid; yMax += grid;
 
-        var thin = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));   // faint
-        var axis = new SolidColorBrush(Color.FromArgb(120, 255, 255, 255));  // stronger
+        var thin = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+        var axis = new SolidColorBrush(Color.FromArgb(120, 255, 255, 255));
         double thinWidth = 0.5;
         double axisWidth = 1.5;
 
-        // Vertical grid lines
         double startX = Math.Floor(xMin / grid) * grid;
         for (double x = startX; x <= xMax; x += grid)
         {
@@ -237,7 +240,6 @@ public partial class BoardView : UserControl
             _gridLayer.Children.Add(line);
         }
 
-        // Horizontal grid lines
         double startY = Math.Floor(yMin / grid) * grid;
         for (double y = startY; y <= yMax; y += grid)
         {
@@ -252,17 +254,15 @@ public partial class BoardView : UserControl
             _gridLayer.Children.Add(line);
         }
 
-        // Axis labels at reasonable interval (every 5 grid steps)
         double labelStep = grid * 5;
         if (labelStep <= 0) labelStep = grid;
 
-        // Labels along x-axis (y = 0)
         if (yMin <= 0 && yMax >= 0)
         {
             double startLabelX = Math.Floor(xMin / labelStep) * labelStep;
             for (double x = startLabelX; x <= xMax; x += labelStep)
             {
-                if (Math.Abs(x) < 1e-6) continue; // skip 0, we'll label on y-axis instead
+                if (Math.Abs(x) < 1e-6) continue;
                 var tb = new TextBlock
                 {
                     Text = x.ToString("0"),
@@ -270,43 +270,41 @@ public partial class BoardView : UserControl
                     Foreground = axis
                 };
                 Canvas.SetLeft(tb, x + 2);
-                Canvas.SetTop(tb, 2); // offset from axis
+                Canvas.SetTop(tb, 2);
                 _gridLayer.Children.Add(tb);
             }
         }
 
-        // Labels along y-axis (x = 0)
         if (xMin <= 0 && xMax >= 0)
         {
             double startLabelY = Math.Floor(yMin / labelStep) * labelStep;
             for (double y = startLabelY; y <= yMax; y += labelStep)
             {
-                if (Math.Abs(y) < 1e-6) continue; // skip 0
+                if (Math.Abs(y) < 1e-6) continue;
                 var tb = new TextBlock
                 {
                     Text = y.ToString("0"),
                     FontSize = 10,
                     Foreground = axis
                 };
-                Canvas.SetLeft(tb, 2); // offset from axis
+                Canvas.SetLeft(tb, 2);
                 Canvas.SetTop(tb, y + 2);
                 _gridLayer.Children.Add(tb);
             }
         }
     }
 
-    // ============= TRANSFORM =============
+    // ---------- TRANSFORM ----------
 
     private void ApplyTransform()
     {
-        // screen = world * _zoom + _offset
         _viewTransform.Matrix = new Matrix(
-            _zoom,       // M11
-            0,           // M12
-            0,           // M21
-            _zoom,       // M22
-            _offset.X,   // M31
-            _offset.Y    // M32
+            _zoom,
+            0,
+            0,
+            _zoom,
+            _offset.X,
+            _offset.Y
         );
         UpdateGrid();
     }
@@ -319,12 +317,11 @@ public partial class BoardView : UserControl
         );
     }
 
-    // ============= ZOOM / PAN / EMPTY-CLICK DESELECT =============
+    // ---------- POINTER: ZOOM / PAN / DESELECT ----------
 
     private void OnPointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
         double oldZoom = _zoom;
-
         double factor = e.Delta.Y > 0
             ? (1.0 + ZoomFactorStep)
             : 1.0 / (1.0 + ZoomFactorStep);
@@ -355,7 +352,6 @@ public partial class BoardView : UserControl
 
         var pt = e.GetCurrentPoint(_boardHost);
 
-        // Middle mouse → pan
         if (pt.Properties.IsMiddleButtonPressed)
         {
             _isPanning = true;
@@ -365,7 +361,6 @@ public partial class BoardView : UserControl
             return;
         }
 
-        // Left-click on empty background → deselect (clicks on nodes mark e.Handled)
         if (pt.Properties.IsLeftButtonPressed && !e.Handled)
         {
             ClearSelection();
@@ -374,13 +369,11 @@ public partial class BoardView : UserControl
 
     private void OnPointerMoved(object? sender, PointerEventArgs e)
     {
-        // --- Resizing selection ---
         if (_isResizingSelection && (_selectedImages.Count > 0 || _selectedNotes.Count > 0))
         {
             var screen = e.GetPosition(_boardHost);
             var world = ScreenToWorld(screen);
 
-            // Live snapping of the resize handle to the grid
             if (_snapToGrid && _snapSize > 0)
                 world = SnapPoint(world);
 
@@ -388,7 +381,6 @@ public partial class BoardView : UserControl
             return;
         }
 
-        // --- Dragging selection ---
         if (_isDraggingSelection && (_selectedImages.Count > 0 || _selectedNotes.Count > 0))
         {
             var screen = e.GetPosition(_boardHost);
@@ -425,7 +417,6 @@ public partial class BoardView : UserControl
             return;
         }
 
-        // --- Panning ---
         if (!_isPanning)
             return;
 
@@ -486,7 +477,7 @@ public partial class BoardView : UserControl
         }
     }
 
-    // ============= KEYBOARD: CTRL+V (image), CTRL+N (note) =============
+    // ---------- KEYBOARD ----------
 
     private async void OnBoardHostKeyDown(object? sender, KeyEventArgs e)
     {
@@ -508,7 +499,7 @@ public partial class BoardView : UserControl
         }
     }
 
-    // ============= CLIPBOARD: CTRL+V IMAGE =============
+    // ---------- CLIPBOARD PASTE (IMAGE / URL) ----------
 
     private async Task PasteImageFromClipboardAsync()
     {
@@ -517,7 +508,6 @@ public partial class BoardView : UserControl
         if (clipboard is null)
             return;
 
-        // Try bitmap
         var bmp = await clipboard.TryGetBitmapAsync();
         if (bmp is not null)
         {
@@ -527,7 +517,6 @@ public partial class BoardView : UserControl
             return;
         }
 
-        // Fallback: image URL
         var text = await clipboard.TryGetTextAsync();
         if (string.IsNullOrWhiteSpace(text))
             return;
@@ -548,7 +537,6 @@ public partial class BoardView : UserControl
         }
         catch
         {
-            // ignore
         }
     }
 
@@ -562,68 +550,71 @@ public partial class BoardView : UserControl
                lower.EndsWith(".webp");
     }
 
-    // ============= DRAG & DROP IMAGES =============
+    // ---------- DRAG & DROP IMAGES ----------
 
-    private async void OnBoardHostDropImages(object? sender, DragEventArgs e)
+#pragma warning disable CS0618
+private async void OnBoardHostDropImages(object? sender, DragEventArgs e)
+{
+    var data = e.Data;
+
+    var screenPos = e.GetPosition(_boardHost);
+    var worldPos = ScreenToWorld(screenPos);
+
+    // Local files
+    if (data.Contains(DataFormats.FileNames))
     {
-        var data = e.Data;
-
-        var screenPos = e.GetPosition(_boardHost);
-        var worldPos = ScreenToWorld(screenPos);
-
-        // Local files
-        if (data.Contains(DataFormats.FileNames))
+        var fileNames = data.GetFileNames();
+        if (fileNames != null)
         {
-            var fileNames = data.GetFileNames();
-            if (fileNames != null)
+            foreach (var path in fileNames)
             {
-                foreach (var path in fileNames)
-                {
-                    if (!IsImageFile(path))
-                        continue;
+                if (!IsImageFile(path))
+                    continue;
 
-                    try
-                    {
-                        await using var fs = File.OpenRead(path);
-                        var bmp = new Bitmap(fs);
-                        AddImageFromBitmap(bmp, worldPos);
-                        worldPos = new Point(worldPos.X + 20, worldPos.Y + 20);
-                    }
-                    catch
-                    {
-                        // ignore
-                    }
-                }
-            }
-
-            e.Handled = true;
-            return;
-        }
-
-        // Text drop: URL
-        if (data.Contains(DataFormats.Text))
-        {
-            var text = data.GetText();
-            if (!string.IsNullOrWhiteSpace(text) &&
-                Uri.IsWellFormedUriString(text, UriKind.Absolute) &&
-                LooksLikeImageUrl(text))
-            {
                 try
                 {
-                    using var http = new HttpClient();
-                    await using var stream = await http.GetStreamAsync(text);
-                    var bmp = new Bitmap(stream);
+                    await using var fs = File.OpenRead(path);
+                    var bmp = new Bitmap(fs);
                     AddImageFromBitmap(bmp, worldPos);
+                    worldPos = new Point(worldPos.X + 20, worldPos.Y + 20);
                 }
                 catch
                 {
                     // ignore
                 }
             }
-
-            e.Handled = true;
         }
+
+        e.Handled = true;
+        return;
     }
+
+    // Text drop: URL
+    if (data.Contains(DataFormats.Text))
+    {
+        var text = data.GetText();
+        if (!string.IsNullOrWhiteSpace(text) &&
+            Uri.IsWellFormedUriString(text, UriKind.Absolute) &&
+            LooksLikeImageUrl(text))
+        {
+            try
+            {
+                using var http = new HttpClient();
+                await using var stream = await http.GetStreamAsync(text);
+                var bmp = new Bitmap(stream);
+                AddImageFromBitmap(bmp, worldPos);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        e.Handled = true;
+    }
+}
+
+#pragma warning restore CS0618
 
     private static bool IsImageFile(string path)
     {
@@ -636,7 +627,7 @@ public partial class BoardView : UserControl
                lower.EndsWith(".webp");
     }
 
-    // ============= IMAGE & NOTE CREATION =============
+    // ---------- CREATE IMAGES / NOTES ----------
 
     private void AddImageFromBitmap(Bitmap bitmap, Point worldPos)
     {
@@ -680,7 +671,7 @@ public partial class BoardView : UserControl
         _noteLayer.Children.Add(note);
     }
 
-    // ============= SELECTION HELPERS =============
+    // ---------- SELECTION HELPERS ----------
 
     private void ClearSelection()
     {
@@ -788,10 +779,10 @@ public partial class BoardView : UserControl
 
         var corners = new[]
         {
-            new Point(rect.X, rect.Y),                           // TL
-            new Point(rect.X + rect.Width, rect.Y),              // TR
-            new Point(rect.X + rect.Width, rect.Y + rect.Height),// BR
-            new Point(rect.X, rect.Y + rect.Height)              // BL
+            new Point(rect.X, rect.Y),
+            new Point(rect.X + rect.Width, rect.Y),
+            new Point(rect.X + rect.Width, rect.Y + rect.Height),
+            new Point(rect.X, rect.Y + rect.Height)
         };
 
         for (int i = 0; i < 4; i++)
@@ -859,7 +850,7 @@ public partial class BoardView : UserControl
                 h.ZIndex = int.MaxValue;
     }
 
-    // ============= IMAGE CLICK / SELECTION =============
+    // ---------- IMAGE CLICK / SELECTION ----------
 
     private void OnImagePointerPressed(object? sender, PointerPressedEventArgs e)
     {
@@ -938,14 +929,13 @@ public partial class BoardView : UserControl
         e.Handled = true;
     }
 
-    // ============= NOTE CLICK / SELECTION =============
+    // ---------- NOTE CLICK / SELECTION ----------
 
     private void OnNotePointerPressed(object? sender, PointerPressedEventArgs e)
     {
         if (sender is not NoteView note)
             return;
 
-        // If the note is currently being edited, ignore this so text editing works normally
         if (note.IsEditing)
             return;
 
@@ -1021,7 +1011,7 @@ public partial class BoardView : UserControl
         e.Handled = true;
     }
 
-    // ============= RESIZE HANDLES (GROUP) =============
+    // ---------- RESIZE HANDLES ----------
 
     private void OnResizeHandlePointerEntered(object? sender, PointerEventArgs e)
     {
@@ -1082,7 +1072,6 @@ public partial class BoardView : UserControl
         if (r.Width <= 0 || r.Height <= 0)
             return;
 
-        // Original group corners
         var tl = new Point(r.X, r.Y);
         var tr = new Point(r.X + r.Width, r.Y);
         var br = new Point(r.X + r.Width, r.Y + r.Height);
@@ -1093,19 +1082,19 @@ public partial class BoardView : UserControl
 
         switch (_activeHandleIndex)
         {
-            case 0: // TL -> opposite = BR
+            case 0:
                 origCorner = tl;
                 oppCorner = br;
                 break;
-            case 1: // TR -> opposite = BL
+            case 1:
                 origCorner = tr;
                 oppCorner = bl;
                 break;
-            case 2: // BR -> opposite = TL
+            case 2:
                 origCorner = br;
                 oppCorner = tl;
                 break;
-            case 3: // BL -> opposite = TR
+            case 3:
                 origCorner = bl;
                 oppCorner = tr;
                 break;
@@ -1113,15 +1102,12 @@ public partial class BoardView : UserControl
                 return;
         }
 
-        // Vector from opposite corner to original corner (for uniform image scale)
         var v = new Vector(origCorner.X - oppCorner.X, origCorner.Y - oppCorner.Y);
         if (Math.Abs(v.X) < 1e-6 && Math.Abs(v.Y) < 1e-6)
             return;
 
-        // Vector from opposite corner to pointer
         var p = new Vector(pointerWorld.X - oppCorner.X, pointerWorld.Y - oppCorner.Y);
 
-        // Uniform scalar for images
         double dot_vp = v.X * p.X + v.Y * p.Y;
         double dot_vv = v.X * v.X + v.Y * v.Y;
 
@@ -1138,7 +1124,6 @@ public partial class BoardView : UserControl
         if (s < minScale)
             s = minScale;
 
-        // --- Anisotropic factors for notes (sx, sy) ---
         double dxOrig = origCorner.X - oppCorner.X;
         double dyOrig = origCorner.Y - oppCorner.Y;
         double dxPtr = pointerWorld.X - oppCorner.X;
@@ -1147,23 +1132,21 @@ public partial class BoardView : UserControl
         double sx, sy;
 
         if (Math.Abs(dxOrig) < 1e-6)
-            sx = s;                        // fallback to uniform if no horizontal span
+            sx = s;
         else
             sx = dxPtr / dxOrig;
 
         if (Math.Abs(dyOrig) < 1e-6)
-            sy = s;                        // fallback to uniform if no vertical span
+            sy = s;
         else
             sy = dyPtr / dyOrig;
 
-        // Prevent flipping and tiny sizes
         if (sx <= 0) sx = minScale;
         if (sy <= 0) sy = minScale;
 
         sx = Math.Max(sx, minScale);
         sy = Math.Max(sy, minScale);
 
-        // ---------- IMAGES: uniform scale (s) ----------
         foreach (var kvp in _originalImageRects)
         {
             var img = kvp.Key;
@@ -1201,7 +1184,6 @@ public partial class BoardView : UserControl
             img.Height = newHeight;
         }
 
-        // ---------- NOTES: non-uniform scale (sx, sy) ----------
         foreach (var kvp in _originalNoteRects)
         {
             var note = kvp.Key;

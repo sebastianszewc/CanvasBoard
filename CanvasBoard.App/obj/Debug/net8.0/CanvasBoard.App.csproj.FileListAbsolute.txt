@@ -1,3 +1,11 @@
+/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.csproj.AssemblyReference.cache
+/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/Avalonia/Resources.Inputs.cache
+/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/Avalonia/resources
+/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.GeneratedMSBuildEditorConfig.editorconfig
+/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.AssemblyInfoInputs.cache
+/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.AssemblyInfo.cs
+/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.csproj.CoreCompileInputs.cache
+/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.sourcelink.json
 /home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/bin/Debug/net8.0/CanvasBoard.App
 /home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/bin/Debug/net8.0/CanvasBoard.App.deps.json
 /home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/bin/Debug/net8.0/CanvasBoard.App.runtimeconfig.json
@@ -73,14 +81,6 @@
 /home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/bin/Debug/net8.0/runtimes/win-arm64/native/libSkiaSharp.dll
 /home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/bin/Debug/net8.0/runtimes/win-x64/native/libSkiaSharp.dll
 /home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/bin/Debug/net8.0/runtimes/win-x86/native/libSkiaSharp.dll
-/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.csproj.AssemblyReference.cache
-/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/Avalonia/Resources.Inputs.cache
-/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/Avalonia/resources
-/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.GeneratedMSBuildEditorConfig.editorconfig
-/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.AssemblyInfoInputs.cache
-/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.AssemblyInfo.cs
-/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.csproj.CoreCompileInputs.cache
-/home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.sourcelink.json
 /home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.csproj.CopyComplete
 /home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/CanvasBoard.App.dll
 /home/seb/Documents/coding/CanvasBoard/CanvasBoard.App/obj/Debug/net8.0/refint/CanvasBoard.App.dll

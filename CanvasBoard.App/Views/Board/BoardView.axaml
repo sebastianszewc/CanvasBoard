@@ -58,6 +58,11 @@
                     VerticalAlignment="Stretch"
                     IsHitTestVisible="False" />
 
+            <!-- LAYER 2: notes (markdown boxes) -->
+            <Canvas x:Name="NoteLayer"
+                    HorizontalAlignment="Stretch"
+                    VerticalAlignment="Stretch" />
+
             <!-- LAYER 1: images -->
             <Canvas x:Name="ImageLayer"
                     HorizontalAlignment="Stretch"
@@ -73,10 +78,7 @@
 
             </Canvas>
 
-            <!-- LAYER 2: notes (markdown boxes) -->
-            <Canvas x:Name="NoteLayer"
-                    HorizontalAlignment="Stretch"
-                    VerticalAlignment="Stretch" />
+
 
           </Grid>
         </Grid>

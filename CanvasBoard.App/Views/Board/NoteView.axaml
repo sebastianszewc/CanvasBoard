@@ -2,9 +2,11 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:md="https://github.com/whistyun/Markdown.Avalonia"
              x:Class="CanvasBoard.App.Views.Board.NoteView">
-  <Border Background="#80000000"
-          Padding="4"
-          CornerRadius="4"
+  <Border Background="#212121"       
+          Padding="6"
+          CornerRadius="0"           
+          BorderBrush="#555555"
+          BorderThickness="1"
           DoubleTapped="OnBorderDoubleTapped">
     <Grid>
       <!-- Rendered markdown (view mode) -->
@@ -15,7 +17,7 @@
                AcceptsReturn="True"
                MinWidth="200"
                MinHeight="80"
-               Background="#222222"
+               Background="#2B2B2B"
                Foreground="White"
                BorderThickness="0"
                FontFamily="Consolas, Monospace"
