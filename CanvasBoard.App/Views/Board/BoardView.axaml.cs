@@ -48,6 +48,9 @@ public partial class BoardView : UserControl
     private Point _dragStartWorld;
     private Dictionary<Image, Point> _dragStartImageTopLefts = new();
 
+    private int _zCounter = 0; // NEW
+
+
     public BoardView()
     {
         InitializeComponent();
@@ -406,6 +409,8 @@ public partial class BoardView : UserControl
         Canvas.SetLeft(img, worldPos.X);
         Canvas.SetTop(img, worldPos.Y);
 
+        img.ZIndex = _zCounter++;
+
         img.PointerPressed += OnImagePointerPressed;
 
         _imageLayer.Children.Add(img);
@@ -469,9 +474,14 @@ public partial class BoardView : UserControl
                 _selectedImages.Add(img);
 
             if (_selectedImages.Count == 0)
+            {
                 ClearSelection();
+            }
             else
+            {
+                BringSelectionToFront();
                 UpdateSelectionVisuals();
+            }
         }
         else
         {
@@ -483,6 +493,10 @@ public partial class BoardView : UserControl
                 _selectedImages.Add(img);
             }
             // If it's already in the group, keep the whole selection as-is
+
+            if (_selectedImages.Count > 0)
+                BringSelectionToFront();
+
             UpdateSelectionVisuals();
         }
 
@@ -555,6 +569,21 @@ public partial class BoardView : UserControl
             return new Rect(0, 0, 0, 0);
 
         return new Rect(minX, minY, maxX - minX, maxY - minY);
+    }
+
+    private void BringSelectionToFront()
+    {
+        foreach (var img in _selectedImages)
+        {
+            img.ZIndex = _zCounter++;
+        }
+
+        if (_selectionOutline != null)
+            _selectionOutline.ZIndex = int.MaxValue - 1;
+
+        foreach (var h in _resizeHandles)
+            if (h != null)
+                h.ZIndex = int.MaxValue;
     }
 
     private void UpdateSelectionVisuals()
