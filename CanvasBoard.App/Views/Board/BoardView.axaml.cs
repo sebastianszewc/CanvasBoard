@@ -481,6 +481,7 @@ public partial class BoardView : UserControl
 
     private async void OnBoardHostKeyDown(object? sender, KeyEventArgs e)
     {
+        // Ctrl + V -> paste image / URL
         if ((e.KeyModifiers & KeyModifiers.Control) == KeyModifiers.Control)
         {
             if (e.Key == Key.V)
@@ -496,6 +497,22 @@ public partial class BoardView : UserControl
                 e.Handled = true;
                 return;
             }
+
+            // Ctrl + X -> delete selected images/notes (cut without clipboard)
+            if (e.Key == Key.X)
+            {
+                DeleteSelection();
+                e.Handled = true;
+                return;
+            }
+        }
+
+        // Delete key -> delete selected images/notes
+        if (e.Key == Key.Delete)
+        {
+            DeleteSelection();
+            e.Handled = true;
+            return;
         }
     }
 
@@ -678,6 +695,28 @@ private async void OnBoardHostDropImages(object? sender, DragEventArgs e)
         _selectedImages.Clear();
         _selectedNotes.Clear();
         UpdateSelectionVisuals();
+    }
+
+    private void DeleteSelection()
+    {
+        if (_selectedImages.Count == 0 && _selectedNotes.Count == 0)
+            return;
+
+        // Copy to temporary lists so we don't modify while iterating
+        var imagesToRemove = new List<Image>(_selectedImages);
+        var notesToRemove = new List<NoteView>(_selectedNotes);
+
+        foreach (var img in imagesToRemove)
+        {
+            _imageLayer.Children.Remove(img);
+        }
+
+        foreach (var note in notesToRemove)
+        {
+            _noteLayer.Children.Remove(note);
+        }
+
+        ClearSelection();
     }
 
     private Rect GetImageRect(Image img)
