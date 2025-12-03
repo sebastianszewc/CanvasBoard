@@ -25,6 +25,7 @@ namespace CanvasBoard.App.Views.Board
         {
             public int LineIndex;
             public List<string> Cells = new();
+            public bool IsSeparator; // true for |---|---| style alignment rows
         }
 
         private sealed class TableGroup
@@ -58,7 +59,7 @@ namespace CanvasBoard.App.Views.Board
             public bool IsQuote;
             public bool IsHorizontalRule;
 
-            public TableRowRef TableRef; // null if not in a table
+            public TableRowRef TableRef; // null if not table row (visible)
         }
 
         private readonly List<VisualLine> _visualLines = new();
@@ -122,6 +123,7 @@ namespace CanvasBoard.App.Views.Board
 
                 if (isActiveDocLine)
                 {
+                    // Active logical line: show raw text (no markdown preview)
                     DrawPlainSegment(context, segmentText, y);
                 }
                 else
@@ -167,6 +169,7 @@ namespace CanvasBoard.App.Views.Board
 
                 _tableRowByLine.TryGetValue(li, out var tableRef);
                 bool isTableLine = tableRef != null;
+                bool isTableSeparator = isTableLine && tableRef.Group.Rows[tableRef.RowIndex].IsSeparator;
 
                 int headingLevel = 0;
                 bool isBullet = false;
@@ -210,7 +213,7 @@ namespace CanvasBoard.App.Views.Board
                             isQuote = true;
                     }
 
-                    // Horizontal rule: only - * _ and spaces, length >= 3, and not part of a table
+                    // Horizontal rule: only - * _ and spaces, length >= 3, and NOT part of a table
                     if (!isTableLine && trimmed.Length >= 3)
                     {
                         bool allHrChars = true;
@@ -242,29 +245,46 @@ namespace CanvasBoard.App.Views.Board
                         IsBullet = isBullet,
                         IsQuote = isQuote,
                         IsHorizontalRule = isHorizontalRule,
-                        TableRef = tableRef
+                        TableRef = null
                     });
                     continue;
                 }
 
-                // Table row: one visual line
+                // Table row: shared block layout
                 if (isTableLine && !isInCodeBlock && !isFenceLine)
                 {
-                    _visualLines.Add(new VisualLine
+                    // Separator rows:
+                    //  - If caret is on this line: show raw text (no table preview).
+                    //  - Otherwise: hide line completely (no extra visual row).
+                    if (isTableSeparator)
                     {
-                        DocLineIndex = li,
-                        StartColumn = 0,
-                        Length = rawLine.Length,
-                        IsFirstSegmentOfLogicalLine = true,
-                        IsInCodeBlock = false,
-                        IsFenceLine = false,
-                        HeadingLevel = headingLevel,
-                        IsBullet = false,
-                        IsQuote = isQuote,
-                        IsHorizontalRule = false,
-                        TableRef = tableRef
-                    });
-                    continue;
+                        if (!(IsFocused && Document.CaretLine == li))
+                        {
+                            // Hidden in preview: no VisualLine
+                            continue;
+                        }
+                        // Fall through to normal (non-table) layout so we draw raw text
+                        // as a regular wrapped line.
+                    }
+                    else
+                    {
+                        // Visible table row
+                        _visualLines.Add(new VisualLine
+                        {
+                            DocLineIndex = li,
+                            StartColumn = 0,
+                            Length = rawLine.Length,
+                            IsFirstSegmentOfLogicalLine = true,
+                            IsInCodeBlock = false,
+                            IsFenceLine = false,
+                            HeadingLevel = headingLevel,
+                            IsBullet = false,
+                            IsQuote = isQuote,
+                            IsHorizontalRule = false,
+                            TableRef = tableRef
+                        });
+                        continue;
+                    }
                 }
 
                 // Horizontal rule: single visual line
@@ -362,7 +382,7 @@ namespace CanvasBoard.App.Views.Board
                     continue;
                 }
 
-                if (LooksLikeTableRow(rawLine, out var cells))
+                if (LooksLikeTableRow(rawLine, out var cells, out bool isSeparator))
                 {
                     if (current == null)
                     {
@@ -373,7 +393,8 @@ namespace CanvasBoard.App.Views.Board
                     current.Rows.Add(new TableRow
                     {
                         LineIndex = li,
-                        Cells = cells
+                        Cells = cells,
+                        IsSeparator = isSeparator
                     });
                 }
                 else
@@ -404,9 +425,10 @@ namespace CanvasBoard.App.Views.Board
             }
         }
 
-        private static bool LooksLikeTableRow(string rawLine, out List<string> cells)
+        private static bool LooksLikeTableRow(string rawLine, out List<string> cells, out bool isSeparator)
         {
             cells = new List<string>();
+            isSeparator = false;
 
             if (string.IsNullOrWhiteSpace(rawLine))
                 return false;
@@ -422,7 +444,23 @@ namespace CanvasBoard.App.Views.Board
                     cells.Add(t);
             }
 
-            return cells.Count >= 2;
+            if (cells.Count < 2)
+                return false;
+
+            // Separator row detection: cells like ---, :---:, etc.
+            bool separator = true;
+            foreach (var c in cells)
+            {
+                var t = c.Replace("-", "").Replace(":", "").Trim();
+                if (t.Length != 0)
+                {
+                    separator = false;
+                    break;
+                }
+            }
+
+            isSeparator = separator;
+            return true;
         }
 
         private void FinalizeTableGroup(TableGroup group)
@@ -443,8 +481,12 @@ namespace CanvasBoard.App.Views.Board
             double fontSize = BaseFontSize;
             double cellPaddingX = 6;
 
+            // Compute widths from NON-separator rows (header + body)
             foreach (var row in group.Rows)
             {
+                if (row.IsSeparator)
+                    continue;
+
                 for (int c = 0; c < row.Cells.Count; c++)
                 {
                     string text = row.Cells[c];
@@ -585,7 +627,7 @@ namespace CanvasBoard.App.Views.Board
                 return;
             }
 
-            // Table row: use block-level widths
+            // Table row: use block-level layout (separator rows never reach here)
             if (isTableLine)
             {
                 DrawTableRow(context, vis.TableRef, y);
@@ -803,37 +845,12 @@ namespace CanvasBoard.App.Views.Board
             var brush = Brushes.White;
 
             double cellPaddingX = 6;
-            double cellPaddingY = 2;
-
-            // Detect header separator row (e.g., --- or :---:)
-            bool isSeparatorRow = true;
-            foreach (var c in cells)
-            {
-                var t = c.Replace("-", "").Replace(":", "").Trim();
-                if (t.Length != 0)
-                {
-                    isSeparatorRow = false;
-                    break;
-                }
-            }
-
-            double x = LeftPadding;
-
-            if (isSeparatorRow)
-            {
-                double totalWidth = 0;
-                int colCount = colWidths.Length;
-                for (int c = 0; c < colCount; c++)
-                    totalWidth += colWidths[c];
-
-                var pen = new Pen(new SolidColorBrush(Color.FromArgb(160, 200, 200, 200)), 1);
-                double yMid = y + fontSize * 0.8;
-                context.DrawLine(pen, new Point(LeftPadding, yMid), new Point(LeftPadding + totalWidth, yMid));
-                return;
-            }
+            double rowHeight = BaseFontSize * LineSpacing;
 
             var borderPen = new Pen(new SolidColorBrush(Color.FromArgb(120, 120, 120, 120)), 1);
             var bg = new SolidColorBrush(Color.FromArgb(40, 80, 80, 80));
+
+            double x = LeftPadding;
 
             for (int c = 0; c < colWidths.Length; c++)
             {
@@ -848,13 +865,14 @@ namespace CanvasBoard.App.Views.Board
                     brush);
 
                 double cellWidth = colWidths[c];
-                double cellHeight = ft.Height + cellPaddingY * 2;
 
-                var rect = new Rect(x, y + fontSize * 0.15, cellWidth, cellHeight);
+                // Full-height rect for this row; adjacent rows share edges (no gap)
+                var rect = new Rect(x, y, cellWidth, rowHeight);
                 context.FillRectangle(bg, rect);
                 context.DrawRectangle(borderPen, rect);
 
-                var textPos = new Point(x + cellPaddingX, y + fontSize * 0.2);
+                double textOffsetY = y + (rowHeight - ft.Height) / 2.0;
+                var textPos = new Point(x + cellPaddingX, textOffsetY);
                 context.DrawText(ft, textPos);
 
                 x += cellWidth;
@@ -1105,7 +1123,7 @@ namespace CanvasBoard.App.Views.Board
                     Document.MoveCaretRight();
                     break;
                 case Key.Up:
-                    Document.MoveCaretUp();   // still logical, not visual-wrap-aware
+                    Document.MoveCaretUp();   // logical up/down
                     break;
                 case Key.Down:
                     Document.MoveCaretDown();
