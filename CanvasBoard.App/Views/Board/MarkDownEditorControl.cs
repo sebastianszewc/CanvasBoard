@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -18,6 +19,7 @@ namespace CanvasBoard.App.Views.Board
         private const double BaseFontSize = 14.0;
         private const double LineSpacing = 1.4;
         private const double LeftPadding = 6.0;
+        private const double TableCellPaddingX = 6.0;
 
         // --------- Table block structures ---------
 
@@ -25,7 +27,7 @@ namespace CanvasBoard.App.Views.Board
         {
             public int LineIndex;
             public List<string> Cells = new();
-            public bool IsSeparator; // true for |---|---| style alignment rows
+            public bool IsSeparator; // true for |---|---| line
         }
 
         private sealed class TableGroup
@@ -43,6 +45,22 @@ namespace CanvasBoard.App.Views.Board
         private readonly List<TableGroup> _tableGroups = new();
         private readonly Dictionary<int, TableRowRef> _tableRowByLine = new();
 
+        // Hit regions for table UI (+ row / + col)
+        private enum TableHitType
+        {
+            AddRow,
+            AddColumn
+        }
+
+        private sealed class TableHitRegion
+        {
+            public Rect Rect;
+            public TableGroup Group;
+            public TableHitType Type;
+        }
+
+        private readonly List<TableHitRegion> _tableHitRegions = new();
+
         // --------- Visual line representation ---------
 
         private sealed class VisualLine
@@ -59,7 +77,7 @@ namespace CanvasBoard.App.Views.Board
             public bool IsQuote;
             public bool IsHorizontalRule;
 
-            public TableRowRef TableRef; // null if not table row (visible)
+            public TableRowRef TableRef; // null if not table row
         }
 
         private readonly List<VisualLine> _visualLines = new();
@@ -111,26 +129,81 @@ namespace CanvasBoard.App.Views.Board
             var bg = new SolidColorBrush(Color.FromRgb(0x2B, 0x2B, 0x2B));
             context.FillRectangle(bg, new Rect(Bounds.Size));
 
+            _tableHitRegions.Clear();
+
+            // Lines
             for (int i = 0; i < _visualLines.Count; i++)
             {
                 var vis = _visualLines[i];
                 double y = i * lineHeight;
 
-                string rawLine = Document.Lines[vis.DocLineIndex] ?? string.Empty;
+                string rawLine = vis.DocLineIndex >= 0 && vis.DocLineIndex < Document.Lines.Count
+                    ? (Document.Lines[vis.DocLineIndex] ?? string.Empty)
+                    : string.Empty;
+
                 string segmentText = ExtractSegment(rawLine, vis.StartColumn, vis.Length);
 
                 bool isActiveDocLine = IsFocused && vis.DocLineIndex == Document.CaretLine;
+                bool isTableLine = vis.TableRef != null;
 
-                if (isActiveDocLine)
+                if (isTableLine)
                 {
-                    // Active logical line: show raw text (no markdown preview)
+                    if (isActiveDocLine &&
+                        TryGetTableCellFromCaret(
+                            vis.DocLineIndex,
+                            Document.CaretColumn,
+                            out var rowRef,
+                            out var activeCell,
+                            out var cellStart,
+                            out var cellEnd))
+                    {
+                        // Draw the table row with all cells except the active one rendered normally
+                        DrawTableRow(context, rowRef, y, activeCell);
+
+                        // Draw raw text of the active cell only, clipped to the cell rect
+                        string line = rawLine;
+                        int len = Math.Max(0, Math.Min(cellEnd, line.Length) - cellStart);
+                        string cellTextRaw = len > 0 ? line.Substring(cellStart, len) : string.Empty;
+
+                        var ft = new FormattedText(
+                            cellTextRaw,
+                            CultureInfo.CurrentCulture,
+                            FlowDirection.LeftToRight,
+                            _baseTypeface,
+                            BaseFontSize,
+                            Brushes.White);
+
+                        double cellLeftX = GetTableCellLeftX(rowRef, activeCell);
+                        double rowHeight = BaseFontSize * LineSpacing;
+                        double textOffsetY = y + (rowHeight - ft.Height) / 2.0;
+                        double cellWidth = rowRef.Group.ColumnWidths[activeCell];
+                        var rect = new Rect(cellLeftX - TableCellPaddingX, y, cellWidth, rowHeight);
+
+                        using (context.PushClip(new RoundedRect(rect)))
+                        {
+                            context.DrawText(ft, new Point(cellLeftX, textOffsetY));
+                        }
+                    }
+                    else
+                    {
+                        // Non-active table row: fully rendered
+                        DrawTableRow(context, vis.TableRef, y, -1);
+                    }
+                }
+                else if (isActiveDocLine)
+                {
+                    // Active non-table line: raw markdown
                     DrawPlainSegment(context, segmentText, y);
                 }
                 else
                 {
+                    // Normal markdown rendering
                     DrawMarkdownSegment(context, vis, rawLine, segmentText, y);
                 }
             }
+
+            // Table “+ Row” and “+ Col” UI
+            DrawTableUi(context, lineHeight);
 
             if (IsFocused)
                 DrawCaret(context, lineHeight);
@@ -178,7 +251,7 @@ namespace CanvasBoard.App.Views.Board
 
                 if (!isInCodeBlock)
                 {
-                    // Heading (#) with leading spaces allowed
+                    // Heading (#...)
                     {
                         int idx = 0;
                         while (idx < rawLine.Length && char.IsWhiteSpace(rawLine[idx]))
@@ -198,7 +271,7 @@ namespace CanvasBoard.App.Views.Board
                         }
                     }
 
-                    // Bullet (- / *) (if not heading)
+                    // Bullet (- / *)
                     if (headingLevel == 0)
                     {
                         var t = trimmedStart;
@@ -206,14 +279,14 @@ namespace CanvasBoard.App.Views.Board
                             isBullet = true;
                     }
 
-                    // Blockquote (>)
+                    // Blockquote
                     {
                         var t = trimmedStart;
                         if (t.StartsWith(">"))
                             isQuote = true;
                     }
 
-                    // Horizontal rule: only - * _ and spaces, length >= 3, and NOT part of a table
+                    // Horizontal rule (not a table)
                     if (!isTableLine && trimmed.Length >= 3)
                     {
                         bool allHrChars = true;
@@ -228,6 +301,29 @@ namespace CanvasBoard.App.Views.Board
                         if (allHrChars)
                             isHorizontalRule = true;
                     }
+                }
+
+                // Tables: only non-separator rows produce visual lines
+                if (isTableLine && !isInCodeBlock && !isFenceLine)
+                {
+                    if (!isTableSeparator)
+                    {
+                        _visualLines.Add(new VisualLine
+                        {
+                            DocLineIndex = li,
+                            StartColumn = 0,
+                            Length = rawLine.Length,
+                            IsFirstSegmentOfLogicalLine = true,
+                            IsInCodeBlock = false,
+                            IsFenceLine = false,
+                            HeadingLevel = headingLevel,
+                            IsBullet = false,
+                            IsQuote = isQuote,
+                            IsHorizontalRule = false,
+                            TableRef = tableRef
+                        });
+                    }
+                    continue;
                 }
 
                 // Empty line
@@ -250,44 +346,7 @@ namespace CanvasBoard.App.Views.Board
                     continue;
                 }
 
-                // Table row: shared block layout
-                if (isTableLine && !isInCodeBlock && !isFenceLine)
-                {
-                    // Separator rows:
-                    //  - If caret is on this line: show raw text (no table preview).
-                    //  - Otherwise: hide line completely (no extra visual row).
-                    if (isTableSeparator)
-                    {
-                        if (!(IsFocused && Document.CaretLine == li))
-                        {
-                            // Hidden in preview: no VisualLine
-                            continue;
-                        }
-                        // Fall through to normal (non-table) layout so we draw raw text
-                        // as a regular wrapped line.
-                    }
-                    else
-                    {
-                        // Visible table row
-                        _visualLines.Add(new VisualLine
-                        {
-                            DocLineIndex = li,
-                            StartColumn = 0,
-                            Length = rawLine.Length,
-                            IsFirstSegmentOfLogicalLine = true,
-                            IsInCodeBlock = false,
-                            IsFenceLine = false,
-                            HeadingLevel = headingLevel,
-                            IsBullet = false,
-                            IsQuote = isQuote,
-                            IsHorizontalRule = false,
-                            TableRef = tableRef
-                        });
-                        continue;
-                    }
-                }
-
-                // Horizontal rule: single visual line
+                // Horizontal rule
                 if (isHorizontalRule && !isInCodeBlock && !isFenceLine)
                 {
                     _visualLines.Add(new VisualLine
@@ -372,6 +431,7 @@ namespace CanvasBoard.App.Views.Board
                     inCodeFence = !inCodeFence;
                 }
 
+                // Never treat lines inside ``` blocks as tables
                 if (inCodeFence || isFenceLine)
                 {
                     if (current != null)
@@ -382,23 +442,22 @@ namespace CanvasBoard.App.Views.Board
                     continue;
                 }
 
-                if (LooksLikeTableRow(rawLine, out var cells, out bool isSeparator))
+                var parsedRow = ParseTableRow(rawLine, li);
+
+                if (parsedRow != null)
                 {
+                    // This line is part of a table
                     if (current == null)
                     {
                         current = new TableGroup();
                         _tableGroups.Add(current);
                     }
 
-                    current.Rows.Add(new TableRow
-                    {
-                        LineIndex = li,
-                        Cells = cells,
-                        IsSeparator = isSeparator
-                    });
+                    current.Rows.Add(parsedRow);
                 }
                 else
                 {
+                    // End any current table block
                     if (current != null)
                     {
                         FinalizeTableGroup(current);
@@ -410,7 +469,7 @@ namespace CanvasBoard.App.Views.Board
             if (current != null)
                 FinalizeTableGroup(current);
 
-            // Fill lookup: line -> (group,rowIndex)
+            // Build line → table row lookup
             foreach (var group in _tableGroups)
             {
                 for (int ri = 0; ri < group.Rows.Count; ri++)
@@ -425,42 +484,86 @@ namespace CanvasBoard.App.Views.Board
             }
         }
 
-        private static bool LooksLikeTableRow(string rawLine, out List<string> cells, out bool isSeparator)
+        private static TableRow ParseTableRow(string rawLine, int lineIndex)
         {
-            cells = new List<string>();
-            isSeparator = false;
-
             if (string.IsNullOrWhiteSpace(rawLine))
-                return false;
+                return null;
 
-            if (!rawLine.Contains("|"))
-                return false;
+            // Work on a trimmed version
+            var trimmed = rawLine.Trim();
 
-            var parts = rawLine.Split('|');
-            foreach (var part in parts)
+            // Must look like a canonical pipe row: start and end with '|'
+            // This prevents "some text | blah |" from becoming a table.
+            if (!trimmed.StartsWith("|") || !trimmed.EndsWith("|"))
+                return null;
+
+            // Must have at least 2 pipes
+            int pipeCount = 0;
+            foreach (var ch in trimmed)
+                if (ch == '|') pipeCount++;
+            if (pipeCount < 2)
+                return null;
+
+            // Split into interior cells:
+            // "| A | B |" -> ["", " A ", " B ", ""]
+            var parts = trimmed.Split('|');
+            if (parts.Length < 3)
+                return null;
+
+            var cells = new List<string>();
+            for (int i = 1; i < parts.Length - 1; i++)
             {
-                var t = part.Trim();
-                if (t.Length > 0)
-                    cells.Add(t);
+                // keep empty cells too so "|   |   |" is still a table
+                string t = parts[i].Trim();
+                cells.Add(t);
             }
 
-            if (cells.Count < 2)
-                return false;
+            if (cells.Count == 0)
+                return null;
 
-            // Separator row detection: cells like ---, :---:, etc.
-            bool separator = true;
+            // Separator detection: non-empty cells must be only '-' and ':' and include a '-'
+            bool anyNonEmpty = false;
+            bool allSeparatorLike = true;
+
             foreach (var c in cells)
             {
-                var t = c.Replace("-", "").Replace(":", "").Trim();
-                if (t.Length != 0)
+                var t = c.Trim();
+                if (t.Length == 0)
+                    continue;
+
+                anyNonEmpty = true;
+
+                bool hasDash = false;
+                bool onlyDashOrColon = true;
+
+                foreach (var ch in t)
                 {
-                    separator = false;
+                    if (ch == '-')
+                    {
+                        hasDash = true;
+                    }
+                    else if (ch != ':')
+                    {
+                        onlyDashOrColon = false;
+                        break;
+                    }
+                }
+
+                if (!(onlyDashOrColon && hasDash))
+                {
+                    allSeparatorLike = false;
                     break;
                 }
             }
 
-            isSeparator = separator;
-            return true;
+            bool isSeparator = anyNonEmpty && allSeparatorLike;
+
+            return new TableRow
+            {
+                LineIndex = lineIndex,
+                Cells = cells,
+                IsSeparator = isSeparator
+            };
         }
 
         private void FinalizeTableGroup(TableGroup group)
@@ -479,9 +582,8 @@ namespace CanvasBoard.App.Views.Board
             group.ColumnWidths = new double[colCount];
 
             double fontSize = BaseFontSize;
-            double cellPaddingX = 6;
 
-            // Compute widths from NON-separator rows (header + body)
+            // Widths from NON-separator rows only
             foreach (var row in group.Rows)
             {
                 if (row.IsSeparator)
@@ -490,7 +592,7 @@ namespace CanvasBoard.App.Views.Board
                 for (int c = 0; c < row.Cells.Count; c++)
                 {
                     string text = row.Cells[c];
-                    double w = MeasureTextWidth(text, fontSize) + cellPaddingX * 2;
+                    double w = MeasureTextWidth(text, fontSize) + TableCellPaddingX * 2;
                     if (w > group.ColumnWidths[c])
                         group.ColumnWidths[c] = w;
                 }
@@ -620,24 +722,24 @@ namespace CanvasBoard.App.Views.Board
             if (isFenceLine)
                 return;
 
-            // Horizontal rule: full-width line
+            // Horizontal rule
             if (isHr)
             {
                 DrawHorizontalRule(context, y);
                 return;
             }
 
-            // Table row: use block-level layout (separator rows never reach here)
+            // Table row (only used for non-active rows via Render)
             if (isTableLine)
             {
-                DrawTableRow(context, vis.TableRef, y);
+                DrawTableRow(context, vis.TableRef, y, -1);
                 return;
             }
 
             double x = LeftPadding;
             double fontSize = BaseFontSize;
 
-            // Blockquote: bar + strip '>'
+            // Blockquote: leading bar + strip '>'
             int quoteMarkerSkip = 0;
             if (isQuote && vis.IsFirstSegmentOfLogicalLine)
             {
@@ -741,7 +843,7 @@ namespace CanvasBoard.App.Views.Board
                 }
             }
 
-            // Code block lines: shaded mono, no inline parsing
+            // Code block lines
             if (isCodeBlock)
             {
                 var monoTypeface = _baseTypeface;
@@ -830,9 +932,9 @@ namespace CanvasBoard.App.Views.Board
             context.DrawLine(pen, new Point(x1, yMid), new Point(x2, yMid));
         }
 
-        // --------- Table rendering using block layout ---------
+        // --------- Table rendering ---------
 
-        private void DrawTableRow(DrawingContext context, TableRowRef rowRef, double y)
+        private void DrawTableRow(DrawingContext context, TableRowRef rowRef, double y, int activeCellIndex = -1)
         {
             var group = rowRef.Group;
             var row = group.Rows[rowRef.RowIndex];
@@ -844,7 +946,6 @@ namespace CanvasBoard.App.Views.Board
             var typeface = _baseTypeface;
             var brush = Brushes.White;
 
-            double cellPaddingX = 6;
             double rowHeight = BaseFontSize * LineSpacing;
 
             var borderPen = new Pen(new SolidColorBrush(Color.FromArgb(120, 120, 120, 120)), 1);
@@ -866,17 +967,103 @@ namespace CanvasBoard.App.Views.Board
 
                 double cellWidth = colWidths[c];
 
-                // Full-height rect for this row; adjacent rows share edges (no gap)
                 var rect = new Rect(x, y, cellWidth, rowHeight);
                 context.FillRectangle(bg, rect);
                 context.DrawRectangle(borderPen, rect);
 
-                double textOffsetY = y + (rowHeight - ft.Height) / 2.0;
-                var textPos = new Point(x + cellPaddingX, textOffsetY);
-                context.DrawText(ft, textPos);
+                // Skip text for the active cell; it will be drawn as raw text separately
+                if (c != activeCellIndex)
+                {
+                    double textOffsetY = y + (rowHeight - ft.Height) / 2.0;
+                    var textPos = new Point(x + TableCellPaddingX, textOffsetY);
+
+                    using (context.PushClip(new RoundedRect(rect)))
+                    {
+                        context.DrawText(ft, textPos);
+                    }
+                }
 
                 x += cellWidth;
             }
+        }
+
+        // Table UI: + Row under table, + Col to the right
+        private void DrawTableUi(DrawingContext context, double lineHeight)
+        {
+            foreach (var group in _tableGroups)
+            {
+                int minVisIndex = int.MaxValue;
+                int maxVisIndex = -1;
+
+                for (int i = 0; i < _visualLines.Count; i++)
+                {
+                    var vis = _visualLines[i];
+                    if (vis.TableRef != null && ReferenceEquals(vis.TableRef.Group, group))
+                    {
+                        if (i < minVisIndex) minVisIndex = i;
+                        if (i > maxVisIndex) maxVisIndex = i;
+                    }
+                }
+
+                if (maxVisIndex < 0)
+                    continue;
+
+                double yTop = minVisIndex * lineHeight;
+                double yBottom = (maxVisIndex + 1) * lineHeight;
+
+                double xLeft = LeftPadding;
+                double tableWidth = 0;
+                foreach (var w in group.ColumnWidths)
+                    tableWidth += w;
+                double xRight = xLeft + tableWidth;
+
+                // + Row (under last row)
+                double rowBtnHeight = lineHeight * 0.7;
+                var rowRect = new Rect(xLeft, yBottom + 2, tableWidth, rowBtnHeight);
+                var rowBg = new SolidColorBrush(Color.FromArgb(60, 80, 160, 80));
+                var rowBorder = new Pen(new SolidColorBrush(Color.FromArgb(120, 120, 200, 120)), 1);
+                context.FillRectangle(rowBg, rowRect);
+                context.DrawRectangle(rowBorder, rowRect);
+                DrawCenteredLabel(context, rowRect, "+ Row");
+
+                _tableHitRegions.Add(new TableHitRegion
+                {
+                    Rect = rowRect,
+                    Group = group,
+                    Type = TableHitType.AddRow
+                });
+
+                // + Col (to the right)
+                double colBtnWidth = 32;
+                var colRect = new Rect(xRight + 2, yTop, colBtnWidth, yBottom - yTop);
+                var colBg = new SolidColorBrush(Color.FromArgb(60, 80, 80, 160));
+                var colBorder = new Pen(new SolidColorBrush(Color.FromArgb(120, 120, 120, 200)), 1);
+                context.FillRectangle(colBg, colRect);
+                context.DrawRectangle(colBorder, colRect);
+                DrawCenteredLabel(context, colRect, "+ Col");
+
+                _tableHitRegions.Add(new TableHitRegion
+                {
+                    Rect = colRect,
+                    Group = group,
+                    Type = TableHitType.AddColumn
+                });
+            }
+        }
+
+        private void DrawCenteredLabel(DrawingContext context, Rect rect, string label)
+        {
+            var ft = new FormattedText(
+                label,
+                CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight,
+                _baseTypeface,
+                BaseFontSize * 0.85,
+                Brushes.White);
+
+            double x = rect.X + (rect.Width - ft.Width) / 2.0;
+            double y = rect.Y + (rect.Height - ft.Height) / 2.0;
+            context.DrawText(ft, new Point(x, y));
         }
 
         // ================== INLINE MARKDOWN ==================
@@ -934,7 +1121,7 @@ namespace CanvasBoard.App.Views.Board
                 {
                     if (i + 1 < text.Length && text[i + 1] == '*')
                     {
-                        // handled as bold above
+                        // handled above
                     }
                     else
                     {
@@ -985,6 +1172,162 @@ namespace CanvasBoard.App.Views.Board
             return result;
         }
 
+        // ================== TABLE CELL / CARET HELPERS ==================
+
+        private bool TryGetTableCellFromCaret(
+            int lineIndex,
+            int caretCol,
+            out TableRowRef rowRef,
+            out int cellIndex,
+            out int cellStart,
+            out int cellEnd)
+        {
+            rowRef = null;
+            cellIndex = -1;
+            cellStart = 0;
+            cellEnd = 0;
+
+            if (!_tableRowByLine.TryGetValue(lineIndex, out rowRef))
+                return false;
+
+            var row = rowRef.Group.Rows[rowRef.RowIndex];
+            if (row.IsSeparator)
+                return false;
+
+            string line = Document.Lines[lineIndex] ?? string.Empty;
+
+            var pipePositions = new List<int>();
+            for (int i = 0; i < line.Length; i++)
+                if (line[i] == '|')
+                    pipePositions.Add(i);
+
+            if (pipePositions.Count < 2)
+                return false;
+
+            // Cells are between consecutive pipes
+            for (int idx = 0; idx < pipePositions.Count - 1; idx++)
+            {
+                int p0 = pipePositions[idx];
+                int p1 = pipePositions[idx + 1];
+
+                int start = p0 + 1;
+                int end = p1; // exclusive
+
+                if (caretCol < start)
+                {
+                    // caret is left of this cell, snap to this one
+                    cellIndex = idx;
+                    cellStart = start;
+                    cellEnd = end;
+                    return true;
+                }
+
+                if (caretCol >= start && caretCol <= end)
+                {
+                    cellIndex = idx;
+                    cellStart = start;
+                    cellEnd = end;
+                    return true;
+                }
+            }
+
+            // Right of last cell: snap to last cell
+            int lastIdx = pipePositions.Count - 2;
+            cellIndex = lastIdx;
+            cellStart = pipePositions[lastIdx] + 1;
+            cellEnd = pipePositions[lastIdx + 1];
+            return true;
+        }
+
+        private bool TryGetTableCellFromX(
+            int lineIndex,
+            double x,
+            out TableRowRef rowRef,
+            out int cellIndex,
+            out int cellStart,
+            out int cellEnd)
+        {
+            rowRef = null;
+            cellIndex = -1;
+            cellStart = 0;
+            cellEnd = 0;
+
+            if (!_tableRowByLine.TryGetValue(lineIndex, out rowRef))
+                return false;
+
+            var group = rowRef.Group;
+            var row = group.Rows[rowRef.RowIndex];
+            if (row.IsSeparator)
+                return false;
+
+            string line = Document.Lines[lineIndex] ?? string.Empty;
+
+            // Choose column by x relative to table
+            double localX = x - LeftPadding;
+            if (localX < 0) localX = 0;
+
+            int chosenCol = 0;
+            double accum = 0;
+            for (int c = 0; c < group.ColumnWidths.Length; c++)
+            {
+                double w = group.ColumnWidths[c];
+                if (localX < accum + w)
+                {
+                    chosenCol = c;
+                    break;
+                }
+                accum += w;
+                if (c == group.ColumnWidths.Length - 1)
+                    chosenCol = c;
+            }
+
+            // Map chosenCol to text cell boundaries
+            var pipePositions = new List<int>();
+            for (int i = 0; i < line.Length; i++)
+                if (line[i] == '|')
+                    pipePositions.Add(i);
+
+            if (pipePositions.Count < 2)
+                return false;
+
+            if (chosenCol >= pipePositions.Count - 1)
+                chosenCol = pipePositions.Count - 2;
+
+            int p0 = pipePositions[chosenCol];
+            int p1 = pipePositions[chosenCol + 1];
+            cellIndex = chosenCol;
+            cellStart = p0 + 1;
+            cellEnd = p1;
+
+            return true;
+        }
+
+        private double GetTableCellLeftX(TableRowRef rowRef, int cellIndex)
+        {
+            double x = LeftPadding;
+            for (int i = 0; i < cellIndex; i++)
+                x += rowRef.Group.ColumnWidths[i];
+
+            return x + TableCellPaddingX;
+        }
+
+        private bool IsCaretAtTableCellBoundary(out string line, out int cellStart, out int cellEnd)
+        {
+            line = null;
+            cellStart = 0;
+            cellEnd = 0;
+
+            int lineIndex = Document.CaretLine;
+            int col = Document.CaretColumn;
+
+            if (!TryGetTableCellFromCaret(lineIndex, col,
+                    out _, out _, out cellStart, out cellEnd))
+                return false;
+
+            line = Document.Lines[lineIndex] ?? string.Empty;
+            return true;
+        }
+
         // ================== CARET ==================
 
         private void DrawCaret(DrawingContext context, double lineHeight)
@@ -1028,13 +1371,33 @@ namespace CanvasBoard.App.Views.Board
                 return;
 
             int colInSeg = Math.Max(0, caretCol - caretVisual.StartColumn);
-            string prefix = (colInSeg > 0 && caretVisual.StartColumn + colInSeg <= lineText.Length)
-                ? lineText.Substring(caretVisual.StartColumn, colInSeg)
-                : string.Empty;
 
-            double x = LeftPadding + MeasureTextWidth(prefix, BaseFontSize);
+            double x;
             double yTop = visualIndex * lineHeight;
             double yBottom = yTop + lineHeight;
+
+            // Special handling for table rows: caret x is inside active cell
+            if (_tableRowByLine.TryGetValue(caretLine, out var rowRef) &&
+                TryGetTableCellFromCaret(caretLine, caretCol,
+                    out _, out var cellIndex, out var cellStart, out _))
+            {
+                int insideCellCols = Math.Max(0, caretCol - cellStart);
+                string insidePrefix = insideCellCols > 0 && cellStart + insideCellCols <= lineText.Length
+                    ? lineText.Substring(cellStart, insideCellCols)
+                    : string.Empty;
+
+                double cellLeftX = GetTableCellLeftX(rowRef, cellIndex);
+                double w = MeasureTextWidth(insidePrefix, BaseFontSize);
+                x = cellLeftX + w;
+            }
+            else
+            {
+                string prefix = (colInSeg > 0 && caretVisual.StartColumn + colInSeg <= lineText.Length)
+                    ? lineText.Substring(caretVisual.StartColumn, colInSeg)
+                    : string.Empty;
+
+                x = LeftPadding + MeasureTextWidth(prefix, BaseFontSize);
+            }
 
             var caretPen = new Pen(Brushes.White, 1);
             context.DrawLine(caretPen, new Point(x, yTop), new Point(x, yBottom));
@@ -1047,9 +1410,22 @@ namespace CanvasBoard.App.Views.Board
             base.OnPointerPressed(e);
 
             Focus();
-            EnsureLayout();
 
             var p = e.GetPosition(this);
+
+            // Table UI first
+            foreach (var hit in _tableHitRegions)
+            {
+                if (hit.Rect.Contains(p))
+                {
+                    HandleTableHit(hit);
+                    e.Handled = true;
+                    return;
+                }
+            }
+
+            EnsureLayout();
+
             var lineHeight = BaseFontSize * LineSpacing;
 
             if (_visualLines.Count == 0)
@@ -1059,14 +1435,175 @@ namespace CanvasBoard.App.Views.Board
             visIndex = Math.Clamp(visIndex, 0, _visualLines.Count - 1);
 
             var vis = _visualLines[visIndex];
-            string rawLine = Document.Lines[vis.DocLineIndex] ?? string.Empty;
+            string rawLine = vis.DocLineIndex >= 0 && vis.DocLineIndex < Document.Lines.Count
+                ? (Document.Lines[vis.DocLineIndex] ?? string.Empty)
+                : string.Empty;
 
+            // If this is a table row, choose cell by x and put caret inside that cell
+            if (vis.TableRef != null &&
+                TryGetTableCellFromX(vis.DocLineIndex, p.X, out var rowRef,
+                    out _, out var cellStart, out var cellEnd))
+            {
+                // Place caret at end of visible text in that cell (or at cell start if empty)
+                int caretCol = cellStart;
+                int textEnd = Math.Min(cellEnd, rawLine.Length);
+                for (int i = textEnd - 1; i >= cellStart && i < rawLine.Length; i--)
+                {
+                    if (!char.IsWhiteSpace(rawLine[i]))
+                    {
+                        caretCol = i + 1;
+                        break;
+                    }
+                }
+
+                Document.SetCaret(vis.DocLineIndex, caretCol);
+                InvalidateVisual();
+                e.Handled = true;
+                return;
+            }
+
+            // Normal line: approximate column from x
             int col = GetColumnFromX(rawLine, vis.StartColumn, vis.Length, p.X - LeftPadding);
 
             Document.SetCaret(vis.DocLineIndex, col);
             InvalidateVisual();
 
             e.Handled = true;
+        }
+
+        private void HandleTableHit(TableHitRegion hit)
+        {
+            switch (hit.Type)
+            {
+                case TableHitType.AddRow:
+                    AddTableRow(hit.Group);
+                    break;
+                case TableHitType.AddColumn:
+                    AddTableColumn(hit.Group);
+                    break;
+            }
+        }
+
+        // Add row at end (used by +Row button)
+        private void AddTableRow(TableGroup group)
+        {
+            // Last non-separator row
+            int lastNonSepIndex = -1;
+            for (int i = 0; i < group.Rows.Count; i++)
+            {
+                if (!group.Rows[i].IsSeparator)
+                    lastNonSepIndex = i;
+            }
+
+            if (lastNonSepIndex == -1)
+                return;
+
+            var lastRow = group.Rows[lastNonSepIndex];
+            int colCount = group.ColumnWidths.Length;
+
+            string newLine = BuildTableLine(colCount, isSeparator: false);
+
+            int insertLineIndex = lastRow.LineIndex + 1;
+            if (insertLineIndex < 0 || insertLineIndex > Document.Lines.Count)
+                insertLineIndex = Document.Lines.Count;
+
+            Document.Lines.Insert(insertLineIndex, newLine);
+
+            // Caret inside first cell
+            int caretCol = newLine.IndexOf(' ') + 1;
+            if (caretCol < 0) caretCol = newLine.Length;
+
+            Document.SetCaret(insertLineIndex, caretCol);
+            _text = Document.GetText();
+            InvalidateVisual();
+        }
+
+        // Add row below current caret row in same table (used for Enter in table)
+        private void AddTableRowBelowCaret(TableRowRef rowRef)
+        {
+            int colCount = rowRef.Group.ColumnWidths.Length;
+            string newLine = BuildTableLine(colCount, isSeparator: false);
+
+            int insertLineIndex = rowRef.Group.Rows[rowRef.RowIndex].LineIndex + 1;
+            if (insertLineIndex < 0 || insertLineIndex > Document.Lines.Count)
+                insertLineIndex = Document.Lines.Count;
+
+            Document.Lines.Insert(insertLineIndex, newLine);
+
+            int caretCol = newLine.IndexOf(' ') + 1;
+            if (caretCol < 0) caretCol = newLine.Length;
+
+            Document.SetCaret(insertLineIndex, caretCol);
+            _text = Document.GetText();
+            InvalidateVisual();
+        }
+
+        private void AddTableColumn(TableGroup group)
+        {
+            int currentColCount = group.ColumnWidths.Length;
+            int newColCount = currentColCount + 1;
+
+            // Update rows
+            foreach (var row in group.Rows)
+            {
+                var newCells = new List<string>(newColCount);
+                newCells.AddRange(row.Cells);
+
+                if (newCells.Count < newColCount)
+                    newCells.Add(row.IsSeparator ? "---" : string.Empty);
+                else
+                    newCells.Add(row.IsSeparator ? "---" : string.Empty);
+
+                string newLine = BuildTableLineFromCells(newCells);
+                Document.Lines[row.LineIndex] = newLine;
+            }
+
+            // Caret into header's new column (first non-separator row)
+            int headerLineIndex = -1;
+            foreach (var row in group.Rows)
+            {
+                if (!row.IsSeparator)
+                {
+                    headerLineIndex = row.LineIndex;
+                    break;
+                }
+            }
+
+            if (headerLineIndex >= 0)
+            {
+                string headerLine = Document.Lines[headerLineIndex];
+                int caretCol = headerLine.Length - 2;
+                if (caretCol < 0) caretCol = headerLine.Length;
+                Document.SetCaret(headerLineIndex, caretCol);
+            }
+
+            _text = Document.GetText();
+            InvalidateVisual();
+        }
+
+        private string BuildTableLine(int colCount, bool isSeparator)
+        {
+            var cells = new List<string>(colCount);
+            for (int i = 0; i < colCount; i++)
+                cells.Add(isSeparator ? "---" : string.Empty);
+
+            return BuildTableLineFromCells(cells);
+        }
+
+        private string BuildTableLineFromCells(List<string> cells)
+        {
+            var sb = new StringBuilder();
+            sb.Append("|");
+            for (int i = 0; i < cells.Count; i++)
+            {
+                if (i > 0)
+                    sb.Append(" |");
+                sb.Append(' ');
+                sb.Append(cells[i]);
+                sb.Append(' ');
+            }
+            sb.Append(" |");
+            return sb.ToString();
         }
 
         private int GetColumnFromX(string rawLine, int segStart, int segLength, double x)
@@ -1123,10 +1660,12 @@ namespace CanvasBoard.App.Views.Board
                     Document.MoveCaretRight();
                     break;
                 case Key.Up:
-                    Document.MoveCaretUp();   // logical up/down
+                    Document.MoveCaretUp();
+                    SkipSeparatorLines(-1);
                     break;
                 case Key.Down:
                     Document.MoveCaretDown();
+                    SkipSeparatorLines(1);
                     break;
                 case Key.Home:
                     Document.MoveCaretToLineStart();
@@ -1135,21 +1674,80 @@ namespace CanvasBoard.App.Views.Board
                     Document.MoveCaretToLineEnd();
                     break;
                 case Key.Enter:
-                    Document.InsertNewLine();
-                    break;
+                    {
+                        // In tables: Enter adds a new row below current, instead of multi-line cell
+                        if (_tableRowByLine.TryGetValue(Document.CaretLine, out var tr) &&
+                            !tr.Group.Rows[tr.RowIndex].IsSeparator)
+                        {
+                            AddTableRowBelowCaret(tr);
+                        }
+                        else
+                        {
+                            Document.InsertNewLine();
+                            _text = Document.GetText();
+                        }
+                        break;
+                    }
                 case Key.Back:
-                    Document.Backspace();
-                    break;
+                    {
+                        // Prevent backspace from deleting table pipes
+                        if (IsCaretAtTableCellBoundary(out _, out var cellStart, out _))
+                        {
+                            if (Document.CaretColumn <= cellStart)
+                            {
+                                // At left border of cell: do not delete the '|'
+                                break;
+                            }
+                        }
+
+                        Document.Backspace();
+                        _text = Document.GetText();
+                        break;
+                    }
                 case Key.Delete:
-                    Document.Delete();
-                    break;
+                    {
+                        // Prevent delete from deleting table pipes at right cell border
+                        if (IsCaretAtTableCellBoundary(out var line, out _, out var cellEnd))
+                        {
+                            if (Document.CaretColumn >= cellEnd &&
+                                Document.CaretColumn < line.Length &&
+                                line[Document.CaretColumn] == '|')
+                            {
+                                break;
+                            }
+                        }
+
+                        Document.Delete();
+                        _text = Document.GetText();
+                        break;
+                    }
                 default:
                     return;
             }
 
-            _text = Document.GetText();
             InvalidateVisual();
             e.Handled = true;
+        }
+
+        private void SkipSeparatorLines(int direction)
+        {
+            if (direction == 0)
+                return;
+
+            while (true)
+            {
+                if (!_tableRowByLine.TryGetValue(Document.CaretLine, out var tr) ||
+                    !tr.Group.Rows[tr.RowIndex].IsSeparator)
+                {
+                    break;
+                }
+
+                int nextLine = Document.CaretLine + direction;
+                if (nextLine < 0 || nextLine >= Document.Lines.Count)
+                    break;
+
+                Document.SetCaret(nextLine, Math.Clamp(Document.CaretColumn, 0, Document.Lines[nextLine].Length));
+            }
         }
     }
 }
