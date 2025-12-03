@@ -110,10 +110,11 @@ namespace CanvasBoard.App.Views.Board
             var cells = new List<string>();
             for (int i = 1; i < parts.Length - 1; i++)
             {
-                string t = parts[i].Trim();
-                cells.Add(t);
+                // Keep raw cell text (including spaces and <br>)
+                string tRaw = parts[i];
+                cells.Add(tRaw);
             }
-
+            
             if (cells.Count == 0)
                 return null;
 
