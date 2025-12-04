@@ -419,39 +419,32 @@ namespace CanvasBoard.App.Views.Board
                 TryGetTableCellFromX(vis.DocLineIndex, p.X, out var rowRef2,
                     out _, out var cellStart, out var cellEnd))
             {
-                // Place caret at end of visible text in that cell (or at cell start if empty)
-                int caretCol = cellStart;
-                int textEnd = Math.Min(cellEnd, rawLine.Length);
-                while (caretCol < textEnd && char.IsWhiteSpace(rawLine[caretCol]))
-                    caretCol++;
+                int lineEnd = Math.Min(cellEnd, rawLine.Length);
+                if (lineEnd < cellStart)
+                    lineEnd = cellStart;
 
-                // If there is non-whitespace, move caret to end of that text
-                int lastNonWs = -1;
-                for (int i = caretCol; i < textEnd; i++)
+                // For multi-line cells (<br>), pick the segment that corresponds to this visual table line
+                int segmentStart = cellStart;
+                int segmentEnd   = lineEnd;
+
+                int vIndex = vis.TableVisualIndex;
+                if (vIndex > 0 && segmentStart < segmentEnd)
                 {
-                    if (!char.IsWhiteSpace(rawLine[i]))
-                        lastNonWs = i;
+                    segmentStart = GetCellVisualSegmentStart(rawLine, cellStart, lineEnd, vIndex);
+                    if (segmentStart < cellStart || segmentStart > lineEnd)
+                        segmentStart = cellStart;
                 }
 
-                if (lastNonWs >= caretCol)
-                {
-                    // Non-empty cell: caret after last non-whitespace
-                    caretCol = lastNonWs + 1;
-                }
-                else
-                {
-                    // Empty cell: put caret near the left edge of the cell,
-                    // right after the first non-pipe character (usually a single space).
-                    caretCol = Math.Min(cellStart + 1, textEnd);
-                }
+                int caretCol = GetColumnFromX(rawLine, segmentStart, segmentEnd - segmentStart, p.X);
+                caretCol = Math.Clamp(caretCol, segmentStart, segmentEnd);
 
                 Document.SetCaret(vis.DocLineIndex, caretCol);
                 NormalizeCaretAroundBr();
             }
             else
             {
-                // Normal line: approximate column from x
-                int col = GetColumnFromX(rawLine, p.X);
+                // Normal wrapped line: map x within this visual segment
+                int col = GetColumnFromX(rawLine, vis.StartColumn, vis.Length, p.X);
                 Document.SetCaret(vis.DocLineIndex, col);
                 NormalizeCaretAroundBr();
             }
@@ -493,26 +486,26 @@ namespace CanvasBoard.App.Views.Board
             }
         }
 
-        private int GetColumnFromX(string rawLine, double x)
+        private int GetColumnFromX(string rawLine, int startColumn, int length, double x)
         {
             if (rawLine == null)
                 rawLine = string.Empty;
 
             double localX = x - LeftPadding;
             if (localX <= 0)
-                return 0;
+                return startColumn;
 
-            int maxCol = rawLine.Length;
-            if (maxCol == 0)
-                return 0;
+            int maxCol = Math.Min(rawLine.Length, startColumn + length);
+            if (maxCol <= startColumn)
+                return startColumn;
 
-            int bestCol = 0;
+            int bestCol = startColumn;
             double bestDiff = double.MaxValue;
 
-            for (int col = 0; col <= maxCol; col++)
+            for (int col = startColumn; col <= maxCol; col++)
             {
-                string prefix = rawLine.Substring(0, col);
-                double width = MeasureTextWidth(prefix, BaseFontSize);
+                string segment = rawLine.Substring(startColumn, col - startColumn);
+                double width = MeasureTextWidth(segment, BaseFontSize);
                 double diff = Math.Abs(width - localX);
 
                 if (diff < bestDiff)
@@ -545,5 +538,34 @@ namespace CanvasBoard.App.Views.Board
                 Document.SetCaret(nextLine, Math.Clamp(Document.CaretColumn, 0, Document.Lines[nextLine].Length));
             }
         }
+
+        private int GetCellVisualSegmentStart(string line, int cellStart, int cellEnd, int visualIndex)
+        {
+            // visualIndex 0 -> first segment (no <br> consumed)
+            if (visualIndex <= 0)
+                return cellStart;
+
+            const string BrToken = "<br>";
+
+            int start = cellStart;
+            int searchPos = cellStart;
+
+            for (int i = 0; i < visualIndex; i++)
+            {
+                int remaining = cellEnd - searchPos;
+                if (remaining <= 0)
+                    break;
+
+                int brPos = line.IndexOf(BrToken, searchPos, remaining, StringComparison.Ordinal);
+                if (brPos < 0)
+                    break;
+
+                start = brPos + BrToken.Length;
+                searchPos = start;
+            }
+
+            return start;
+        }
+
     }
 }
