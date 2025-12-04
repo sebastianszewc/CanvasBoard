@@ -62,11 +62,15 @@ namespace CanvasBoard.App.Views.Board
                         FinalizeTableGroup(current);
                         current = null;
                     }
+                    // NOTE: do NOT call EnsureTrailingBlankLineAfterFinalTable here
                 }
             }
 
             if (current != null)
                 FinalizeTableGroup(current);
+
+            // After all tables are known, ensure trailing blank line if needed
+            EnsureTrailingBlankLineAfterFinalTable();
 
             // Build line → table row lookup
             foreach (var group in _tableGroups)
@@ -936,5 +940,33 @@ namespace CanvasBoard.App.Views.Board
             return sb.ToString();
         }
 
+        /// <summary>
+        /// If any table's last row is literally the last line of the document,
+        /// append a single empty line so there is always a normal editable line
+        /// under the table.
+        /// </summary>
+        private void EnsureTrailingBlankLineAfterFinalTable()
+        {
+            if (_tableGroups.Count == 0)
+                return;
+
+            // We only need to fix once per build; after adding one line,
+            // BuildTableGroups will be rerun on the next layout.
+            foreach (var group in _tableGroups)
+            {
+                if (group.Rows.Count == 0)
+                    continue;
+
+                int lastTableLine = group.Rows[group.Rows.Count - 1].LineIndex;
+
+                // If the table’s last row is the very last document line
+                if (lastTableLine == Document.Lines.Count - 1)
+                {
+                    // Append a normal blank markdown line
+                    Document.Lines.Add(string.Empty);
+                    break;
+                }
+            }
+        }
     }
 }

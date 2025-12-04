@@ -434,9 +434,18 @@ namespace CanvasBoard.App.Views.Board
                 }
 
                 if (lastNonWs >= caretCol)
+                {
+                    // Non-empty cell: caret after last non-whitespace
                     caretCol = lastNonWs + 1;
+                }
+                else
+                {
+                    // Empty cell: put caret near the left edge of the cell,
+                    // right after the first non-pipe character (usually a single space).
+                    caretCol = Math.Min(cellStart + 1, textEnd);
+                }
 
-                Document.SetCaret(vis.DocLineIndex, Math.Clamp(caretCol, cellStart, cellEnd));
+                Document.SetCaret(vis.DocLineIndex, caretCol);
                 NormalizeCaretAroundBr();
             }
             else
