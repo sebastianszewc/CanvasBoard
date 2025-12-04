@@ -785,13 +785,53 @@ namespace CanvasBoard.App.Views.Board
 
             Document.Lines.Insert(insertLineIndex, newLine);
 
-            // Caret inside first cell
-            int caretCol = newLine.IndexOf(' ') + 1;
+            // Caret at the start of the first cell (right after the first '|')
+            int caretCol = newLine.IndexOf(' ');
             if (caretCol < 0) caretCol = newLine.Length;
 
             Document.SetCaret(insertLineIndex, caretCol);
             _text = Document.GetText();
             InvalidateVisual();
+        }
+
+        // Last non-separator row whose cells are all empty/whitespace
+        private bool IsLastDataRowEmpty(TableRowRef rowRef)
+        {
+            var group = rowRef.Group;
+            int lastNonSepIndex = -1;
+
+            for (int i = 0; i < group.Rows.Count; i++)
+            {
+                if (!group.Rows[i].IsSeparator)
+                    lastNonSepIndex = i;
+            }
+
+            if (lastNonSepIndex < 0 || rowRef.RowIndex != lastNonSepIndex)
+                return false;
+
+            var row = group.Rows[lastNonSepIndex];
+            foreach (var cell in row.Cells)
+            {
+                if (!string.IsNullOrWhiteSpace(cell))
+                    return false;
+            }
+
+            return true;
+        }
+
+        // Insert a normal, non-table line after the whole table
+        private void InsertLineBelowTable(TableGroup group)
+        {
+            if (group.Rows.Count == 0)
+                return;
+
+            // last physical line of the table block (including separator lines)
+            int insertLineIndex = group.Rows[group.Rows.Count - 1].LineIndex + 1;
+            if (insertLineIndex < 0 || insertLineIndex > Document.Lines.Count)
+                insertLineIndex = Document.Lines.Count;
+
+            Document.Lines.Insert(insertLineIndex, string.Empty);
+            Document.SetCaret(insertLineIndex, 0);
         }
 
         private void AddTableRowBelowCaret(TableRowRef rowRef, int cellIndex)
@@ -816,17 +856,14 @@ namespace CanvasBoard.App.Views.Board
             if (pipePositions.Count >= 2 && cellIndex >= 0 && cellIndex < pipePositions.Count - 1)
             {
                 int p0 = pipePositions[cellIndex];
-                int p1 = pipePositions[cellIndex + 1];
-                int start = p0 + 1;
+                int start = p0 + 1;           // first character inside the cell (usually a space)
 
-                caretCol = start;
-                if (caretCol < line.Length && line[caretCol] == ' ')
-                    caretCol++;
+                caretCol = start;             // place caret here; typing will overwrite/precede that space
             }
             else
             {
-                caretCol = newLine.IndexOf(' ') + 1;
-                if (caretCol < 0) caretCol = newLine.Length;
+                int firstSpace = newLine.IndexOf(' ');
+                caretCol = firstSpace >= 0 ? firstSpace : newLine.Length;
             }
 
             Document.SetCaret(insertLineIndex, caretCol);
@@ -892,13 +929,10 @@ namespace CanvasBoard.App.Views.Board
             sb.Append("|");
             for (int i = 0; i < cells.Count; i++)
             {
-                if (i > 0)
-                    sb.Append(" |");
                 sb.Append(' ');
-                sb.Append(cells[i]);
-                sb.Append(' ');
+                sb.Append(cells[i]);   // keep raw cell text
+                sb.Append(" |");       // space then closing pipe
             }
-            sb.Append(" |");
             return sb.ToString();
         }
 
