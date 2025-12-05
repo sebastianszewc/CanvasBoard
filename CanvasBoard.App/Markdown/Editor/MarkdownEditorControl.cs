@@ -5,6 +5,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using CanvasBoard.App.Markdown.Document;
+using CanvasBoard.App.Markdown.Tables;
 
 namespace CanvasBoard.App.Views.Board
 {
@@ -405,6 +406,22 @@ namespace CanvasBoard.App.Views.Board
                 MarkdownLineKind.HorizontalRule => _hrBrush,
                 _ => _foregroundBrush
             };
+        }
+
+        // ----------------------------
+        // Tables
+        // ----------------------------
+
+        private TableEngine? _tableEngine;
+
+        private void RebuildTableEngine()
+        {
+            _tableEngine = new TableEngine(Document);
+        }
+
+        private TableModel? FindTableForLine(int lineIndex)
+        {
+            return _tableEngine?.FindTableAtLine(lineIndex);
         }
     }
 }

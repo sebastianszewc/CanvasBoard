@@ -406,5 +406,11 @@ namespace CanvasBoard.App.Markdown.Document
 
             return oldText;
         }
+        public void SetCaretPosition(int line, int column)
+        {
+            // Clamp defensively if you want, or just assign.
+            CaretLine = line;
+            CaretColumn = column;
+        }
     }
 }

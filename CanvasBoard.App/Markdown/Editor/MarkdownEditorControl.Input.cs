@@ -3,6 +3,8 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using CanvasBoard.App.Markdown.Document;
+using System.Collections.Generic;
+
 
 namespace CanvasBoard.App.Views.Board
 {
@@ -107,7 +109,8 @@ namespace CanvasBoard.App.Views.Board
                         return;
                 }
             }
-            bool handled = true;
+            bool handled = false;
+
 
             switch (e.Key)
             {
@@ -138,6 +141,7 @@ namespace CanvasBoard.App.Views.Board
                             ClearSelection();
                         }
                     }
+                    handled = true;   
                     break;
 
                 case Key.Right:
@@ -167,6 +171,7 @@ namespace CanvasBoard.App.Views.Board
                             ClearSelection();
                         }
                     }
+                    handled = true;   
                     break;
 
                 case Key.Up:
@@ -180,6 +185,7 @@ namespace CanvasBoard.App.Views.Board
                         MoveCaretVisual(-1);
                         ClearSelection();
                     }
+                    handled = true;   
                     break;
 
                 case Key.Down:
@@ -193,6 +199,7 @@ namespace CanvasBoard.App.Views.Board
                         MoveCaretVisual(+1);
                         ClearSelection();
                     }
+                    handled = true;   
                     break;
 
                 case Key.Home:
@@ -206,6 +213,7 @@ namespace CanvasBoard.App.Views.Board
                         Document.MoveCaretToLineStart();
                         ClearSelection();
                     }
+                    handled = true;   
                     break;
 
                 case Key.End:
@@ -219,6 +227,7 @@ namespace CanvasBoard.App.Views.Board
                         Document.MoveCaretToLineEnd();
                         ClearSelection();
                     }
+                    handled = true;   
                     break;
 
                 case Key.Enter:
@@ -297,6 +306,7 @@ namespace CanvasBoard.App.Views.Board
 
                         PushOperation(op, allowMerge: false);
                     }
+                    handled = true;   
                     break;
                 }
 
@@ -354,46 +364,41 @@ namespace CanvasBoard.App.Views.Board
 
                         PushOperation(op, allowMerge: false);
                     }
+                    handled = true;
                     break;
                 }
 
                 case Key.Tab:
                 {
-                    // Indent/outdent current line or all selected lines; treat as one snapshot op.
-                    int firstLine, lastLine;
+                    // If we’re inside a markdown table, navigate between cells
+                    if (TryNavigateTableCell(backwards: shift))
+                    {
+                        e.Handled = true;
+                        return;
+                    }
+
+                    // Otherwise: insert a real tab character (or replace selection with one)
                     if (TryGetSelectionSpan(out var selSpan))
                     {
-                        firstLine = selSpan.StartLine;
-                        lastLine = selSpan.EndLine;
+                        var opSel = ReplaceRangeOperation.CreateAndApply(
+                            Document,
+                            this,
+                            selSpan,
+                            "\t",
+                            clearSelectionAfter: true);
+
+                        PushOperation(opSel, allowMerge: false);
+                        _text = Document.GetText();
                     }
                     else
                     {
-                        firstLine = lastLine = Document.CaretLine;
+                        InsertTabCharacter();
                     }
-
-                    var beforeSel = CaptureSelectionState();
-                    var beforeText = Document.GetText();
-
-                    if (shift)
-                        OutdentLines(firstLine, lastLine);
-                    else
-                        IndentLines(firstLine, lastLine);
-
-                    _text = Document.GetText();
-                    var afterSel = CaptureSelectionState();
-                    var afterText = _text;
-
-                    var op = new SnapshotOperation(beforeText, afterText, beforeSel, afterSel);
-                    PushOperation(op, allowMerge: false);
 
                     InvalidateVisual();
                     e.Handled = true;
                     return;
                 }
-
-                default:
-                    handled = false;
-                    break;
             }
 
             if (handled)
@@ -968,6 +973,311 @@ namespace CanvasBoard.App.Views.Board
                 _text = Document.GetText();
                 InvalidateVisual();
             }
+        }
+    
+        // ----------------------------
+        // Table-aware caret navigation
+        // ----------------------------
+
+        private struct CellSegment
+        {
+            public int Start; // inclusive
+            public int End;   // exclusive
+        }
+
+        private void InsertTabCharacter()
+        {
+            int lineIndex = Document.CaretLine;
+            int col = Document.CaretColumn;
+
+            if (lineIndex < 0 || lineIndex >= Document.Lines.Count)
+                return;
+
+            var span = new LineSpan(lineIndex, col, lineIndex, col);
+            var op = ReplaceRangeOperation.CreateAndApply(
+                Document,
+                this,
+                span,
+                "\t",
+                clearSelectionAfter: true);
+
+            PushOperation(op, allowMerge: true);
+            _text = Document.GetText();
+        }
+
+        private bool TryNavigateTableCell(bool backwards)
+        {
+            if (!TryGetCurrentTableCell(out var table, out var rowIndex, out var colIndex))
+                return false;
+
+            int lastRow = table.RowCount - 1;
+            int lastCol = table.ColumnCount - 1;
+
+            int newRow = rowIndex;
+            int newCol = colIndex;
+
+            if (!backwards)
+            {
+                // Tab forward
+                if (colIndex < lastCol)
+                {
+                    newCol = colIndex + 1;
+                }
+                else if (rowIndex < lastRow)
+                {
+                    newRow = rowIndex + 1;
+                    newCol = 0;
+                }
+                else
+                {
+                    // At last cell of last row: fall back to normal tab behavior
+                    return false;
+                }
+            }
+            else
+            {
+                // Shift+Tab backwards
+                if (colIndex > 0)
+                {
+                    newCol = colIndex - 1;
+                }
+                else if (rowIndex > 0)
+                {
+                    newRow = rowIndex - 1;
+                    newCol = lastCol;
+                }
+                else
+                {
+                    // At first cell of first row
+                    return false;
+                }
+            }
+
+            MoveCaretToTableCell(table, newRow, newCol);
+            return true;
+        }
+
+        private bool TryGetCurrentTableCell(
+            out CanvasBoard.App.Markdown.Tables.TableModel table,
+            out int rowIndex,
+            out int colIndex)
+        {
+            table = null!;
+            rowIndex = -1;
+            colIndex = -1;
+
+            // Ensure table engine is up to date
+            RebuildTableEngine();
+
+            int lineIndex = Document.CaretLine;
+            int caretCol = Document.CaretColumn;
+
+            if (lineIndex < 0 || lineIndex >= Document.Lines.Count)
+                return false;
+
+            var t = FindTableForLine(lineIndex);
+            if (t == null)
+                return false;
+
+            // Ignore alignment/separator row for navigation
+            if (lineIndex == t.StartLine + 1)
+                return false;
+
+            // Map document line to table row index
+            if (lineIndex == t.StartLine)
+            {
+                // Header row
+                rowIndex = 0;
+            }
+            else
+            {
+                // Body rows start at StartLine + 2
+                rowIndex = lineIndex - (t.StartLine + 1);
+            }
+
+            if (rowIndex < 0 || rowIndex >= t.RowCount)
+                return false;
+
+            string line = Document.Lines[lineIndex] ?? string.Empty;
+            caretCol = System.Math.Clamp(caretCol, 0, line.Length);
+
+            var segments = ComputeTableLineSegments(line);
+            if (segments.Count == 0)
+                return false;
+
+            // Determine which segment the caret is in
+            int segIndex = -1;
+
+            for (int i = 0; i < segments.Count; i++)
+            {
+                var seg = segments[i];
+
+                if (caretCol < seg.Start)
+                {
+                    segIndex = i;
+                    break;
+                }
+
+                if (caretCol <= seg.End)
+                {
+                    segIndex = i;
+                    break;
+                }
+            }
+
+            if (segIndex == -1)
+                segIndex = segments.Count - 1;
+
+            colIndex = System.Math.Clamp(segIndex, 0, t.ColumnCount - 1);
+
+            table = t;
+            return true;
+        }
+
+        private void MoveCaretToTableCell(
+            CanvasBoard.App.Markdown.Tables.TableModel table,
+            int rowIndex,
+            int colIndex)
+        {
+            if (table.ColumnCount <= 0 || table.RowCount <= 0)
+                return;
+
+            rowIndex = System.Math.Clamp(rowIndex, 0, table.RowCount - 1);
+            colIndex = System.Math.Clamp(colIndex, 0, table.ColumnCount - 1);
+
+            int docLine;
+
+            if (rowIndex == 0)
+            {
+                // Header
+                docLine = table.StartLine;
+            }
+            else
+            {
+                // Body rows
+                docLine = table.StartLine + 1 + rowIndex;
+            }
+
+            if (docLine < 0 || docLine >= Document.Lines.Count)
+                return;
+
+            string line = Document.Lines[docLine] ?? string.Empty;
+            var segments = ComputeTableLineSegments(line);
+
+            if (segments.Count == 0)
+            {
+                Document.SetCaretPosition(docLine, 0);
+                ClearSelection();
+                InvalidateVisual();
+                return;
+            }
+
+            int segIndex = System.Math.Clamp(colIndex, 0, segments.Count - 1);
+            var seg = segments[segIndex];
+
+            int start = seg.Start;
+            int end = System.Math.Min(seg.End, line.Length);
+
+            // Move to first non-space inside the cell segment
+            int col = start;
+            while (col < end && (line[col] == ' ' || line[col] == '\t' || line[col] == '|'))
+                col++;
+
+            if (col >= end)
+                col = start;
+
+            Document.SetCaretPosition(docLine, System.Math.Clamp(col, 0, line.Length));
+
+            ClearSelection();
+            InvalidateVisual();
+        }
+
+        private static List<CellSegment> ComputeTableLineSegments(string line)
+        {
+            var segments = new List<CellSegment>();
+
+            if (string.IsNullOrEmpty(line))
+                return segments;
+
+            int len = line.Length;
+
+            // Collect positions of all '|' characters
+            var bars = new List<int>();
+            for (int i = 0; i < len; i++)
+            {
+                if (line[i] == '|')
+                    bars.Add(i);
+            }
+
+            if (bars.Count == 0)
+            {
+                // No pipes, treat whole line as a single segment
+                segments.Add(new CellSegment { Start = 0, End = len });
+                return segments;
+            }
+
+            // Consider whether there is a leading pipe after optional whitespace
+            int firstNonWs = 0;
+            while (firstNonWs < len && (line[firstNonWs] == ' ' || line[firstNonWs] == '\t'))
+                firstNonWs++;
+
+            bool hasLeadingPipe = firstNonWs < len && line[firstNonWs] == '|';
+
+            if (hasLeadingPipe)
+            {
+                // Example: "| a | b |", or "  | a | b |"
+                for (int i = 0; i < bars.Count - 1; i++)
+                {
+                    int start = bars[i] + 1;
+                    int end = bars[i + 1];
+
+                    if (end > start)
+                        segments.Add(new CellSegment { Start = start, End = end });
+                }
+
+                // Trailing segment if there is content after the last '|'
+                int lastBar = bars[bars.Count - 1];
+                if (lastBar < len - 1)
+                {
+                    segments.Add(new CellSegment
+                    {
+                        Start = lastBar + 1,
+                        End = len
+                    });
+                }
+            }
+            else
+            {
+                // Example: "a | b | c" (no leading pipe)
+                // First segment: from start to first pipe
+                segments.Add(new CellSegment
+                {
+                    Start = 0,
+                    End = bars[0]
+                });
+
+                // Middle segments: between pipes
+                for (int i = 0; i < bars.Count - 1; i++)
+                {
+                    int start = bars[i] + 1;
+                    int end = bars[i + 1];
+
+                    if (end > start)
+                        segments.Add(new CellSegment { Start = start, End = end });
+                }
+
+                // Trailing segment if there is content after last pipe
+                int lastBar = bars[bars.Count - 1];
+                if (lastBar < len - 1)
+                {
+                    segments.Add(new CellSegment
+                    {
+                        Start = lastBar + 1,
+                        End = len
+                    });
+                }
+            }
+            return segments;
         }
     }
 }

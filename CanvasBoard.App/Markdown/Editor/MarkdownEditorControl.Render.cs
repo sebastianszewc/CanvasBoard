@@ -1,7 +1,10 @@
+using System;
+using System.Collections.Generic;
 using System.Globalization;
 using Avalonia;
 using Avalonia.Media;
 using CanvasBoard.App.Markdown.Document;
+using CanvasBoard.App.Markdown.Tables;
 
 namespace CanvasBoard.App.Views.Board
 {
@@ -24,10 +27,12 @@ namespace CanvasBoard.App.Views.Board
                 var vis = _visualLines[i];
                 double y = i * lineHeight;
 
-                // Selection background for this visual line (if any)
+                // Selection background
                 DrawSelectionForVisualLine(context, vis, y, lineHeight);
 
-                string rawLine = Document.Lines[vis.DocLineIndex] ?? string.Empty;
+                int lineIndex = vis.DocLineIndex;
+
+                string rawLine = Document.Lines[lineIndex] ?? string.Empty;
 
                 // Draw this segment (styled or plain depending on caret line)
                 DrawSegment(context, rawLine, vis, y);
@@ -128,7 +133,7 @@ namespace CanvasBoard.App.Views.Board
 
                 // Intersection with segment
                 int partStart = System.Math.Max(segStart, runStart);
-                int partEnd   = System.Math.Min(segEnd, runEnd);
+                int partEnd = System.Math.Min(segEnd, runEnd);
 
                 if (partEnd <= partStart)
                     continue;
@@ -157,7 +162,6 @@ namespace CanvasBoard.App.Views.Board
                 context.DrawText(ft, new Point(x, y));
             }
         }
-
 
         private void DrawSelectionForVisualLine(
             DrawingContext context,
@@ -217,7 +221,7 @@ namespace CanvasBoard.App.Views.Board
 
             // Intersection of [lineSelStart, lineSelEnd) with [segStart, segEnd)
             int startChar = System.Math.Max(lineSelStart, segStart);
-            int endChar   = System.Math.Min(lineSelEnd, segEnd);
+            int endChar = System.Math.Min(lineSelEnd, segEnd);
 
             if (endChar <= startChar)
                 return;
@@ -289,6 +293,127 @@ namespace CanvasBoard.App.Views.Board
 
             var caretPen = new Pen(Brushes.White, 1);
             context.DrawLine(caretPen, new Point(x, yTop), new Point(x, yBottom));
+        }
+
+        // ----------------------------
+        // Table rendering
+        // ----------------------------
+
+        private void DrawTableRow(DrawingContext context, TableModel table, int docLineIndex, double y)
+        {
+            int colCount = table.ColumnCount;
+            if (colCount <= 0)
+                return;
+
+            // Map document line index to table row index
+            bool isSeparatorRow = false;
+            int rowIndex;
+
+            if (docLineIndex == table.StartLine)
+            {
+                // Header row
+                rowIndex = 0;
+            }
+            else if (docLineIndex == table.StartLine + 1)
+            {
+                // Alignment/separator row (not in Rows collection)
+                isSeparatorRow = true;
+                rowIndex = -1;
+            }
+            else
+            {
+                // Body rows start at StartLine + 2
+                rowIndex = docLineIndex - (table.StartLine + 1);
+            }
+
+            double cw = GetCharWidth();
+
+            // Compute column widths in characters (based on cell content)
+            var colWidths = new int[colCount];
+            for (int c = 0; c < colCount; c++)
+            {
+                int max = 3;
+                for (int r = 0; r < table.RowCount; r++)
+                {
+                    string cellText = table.GetCell(r, c) ?? string.Empty;
+                    if (cellText.Length > max)
+                        max = cellText.Length;
+                }
+
+                // Add a little padding inside each cell
+                colWidths[c] = max + 2;
+            }
+
+            string line;
+
+            if (isSeparatorRow)
+            {
+                var pieces = new List<string>(colCount);
+                for (int c = 0; c < colCount; c++)
+                {
+                    var align = table.Alignments[c];
+                    int innerWidth = System.Math.Max(3, colWidths[c] - 2);
+
+                    string dashes = new string('-', innerWidth);
+                    string cell = align switch
+                    {
+                        TableAlignment.Left => ":" + dashes + " ",
+                        TableAlignment.Right => " " + dashes + ":",
+                        TableAlignment.Center => ":" + dashes + ":",
+                        _ => " " + dashes + " "
+                    };
+                    pieces.Add(cell);
+                }
+
+                line = "| " + string.Join(" | ", pieces) + " |";
+            }
+            else
+            {
+                int effectiveRowIndex = System.Math.Clamp(rowIndex, 0, table.RowCount - 1);
+                var cells = new List<string>(colCount);
+
+                for (int c = 0; c < colCount; c++)
+                {
+                    string cellText = table.GetCell(effectiveRowIndex, c) ?? string.Empty;
+                    int width = colWidths[c];
+
+                    string padded = AlignCellText(cellText, width, table.Alignments[c]);
+                    cells.Add(padded);
+                }
+
+                line = "| " + string.Join(" | ", cells) + " |";
+            }
+
+            var ft = new FormattedText(
+                line,
+                CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight,
+                GetTypefaceForLineKind(MarkdownLineKind.Normal),
+                BaseFontSize,
+                _foregroundBrush);
+
+            context.DrawText(ft, new Point(LeftPadding, y));
+        }
+
+        private static string AlignCellText(string text, int width, TableAlignment align)
+        {
+            text = text ?? string.Empty;
+            if (width <= text.Length)
+                return text;
+
+            int padding = width - text.Length;
+
+            return align switch
+            {
+                TableAlignment.Right =>
+                    new string(' ', padding) + text,
+
+                TableAlignment.Center =>
+                    new string(' ', padding / 2) + text + new string(' ', padding - padding / 2),
+
+                _ => // Left or Default
+                    text + new string(' ', padding),
+            };
         }
     }
 }
