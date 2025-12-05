@@ -51,10 +51,10 @@ namespace CanvasBoard.App.Views.Board
         private static readonly double[] HeadingFontSizeOffsets =
         {
             0.0, // index 0 unused
-            30.0, // H1
-            6.0, // H2
-            4.0, // H3
-            3.0, // H4
+            20.0, // H1
+            10.0, // H2
+            10.0, // H3
+            5.0, // H4
             2.0, // H5
             1.0  // H6
         };
@@ -64,10 +64,10 @@ namespace CanvasBoard.App.Views.Board
         {
             1.0,  // index 0 unused
             4.8,  // H1
-            1.6,  // H2
-            1.4,  // H3
-            1.25, // H4
-            1.15, // H5
+            2.4,  // H2
+            1.2,  // H3
+            1.1, // H4
+            1.08, // H5
             1.08  // H6
         };
 

@@ -20,6 +20,13 @@ namespace CanvasBoard.App.Views.Board
             if (string.IsNullOrEmpty(e.Text))
                 return;
 
+            if (IsCaretInTableStructure())
+            {
+                // Do not allow typing directly into table structure (pipes, alignment row)
+                e.Handled = true;
+                return;
+            }
+
             // Regular typing: Replace selection (if any) with e.Text
             LineSpan range;
             if (TryGetSelectionSpan(out var selSpan))
@@ -270,6 +277,11 @@ namespace CanvasBoard.App.Views.Board
 
                 case Key.Back:
                 {
+                    if (IsCaretInTableStructure())
+                    {
+                        e.Handled = true;
+                        return;
+                    }
                     // If selection -> delete selection; else delete char before caret (including newline)
                     if (TryGetSelectionSpan(out var selSpan))
                     {
@@ -325,6 +337,11 @@ namespace CanvasBoard.App.Views.Board
 
                 case Key.Delete:
                 {
+                    if (IsCaretInTableStructure())
+                    {
+                        e.Handled = true;
+                        return;
+                    }
                     // If selection -> delete selection; else delete char after caret (including newline)
                     if (TryGetSelectionSpan(out var selSpan))
                     {
@@ -1420,5 +1437,49 @@ namespace CanvasBoard.App.Views.Board
             };
         }
 
+        private bool IsCaretInTableStructure()
+        {
+            // Ensure table engine is fresh
+
+            int lineIndex = Document.CaretLine;
+            if (lineIndex < 0 || lineIndex >= Document.Lines.Count)
+                return false;
+
+            var table = FindTableForLine(lineIndex);
+            if (table == null)
+                return false;
+
+            // If caret is inside a regular cell, it's NOT "structure"
+            if (TryGetCurrentTableCell(out _, out _, out _))
+                return false;
+
+            // We're in a table, but not in a cell -> pipes or alignment row
+            return true;
+        }
+
+        private TableModel? FindTableForLine(int lineIndex)
+        {
+            // Make sure _model is parsed
+            EnsureModel();
+            if (_model == null)
+                return null;
+
+            if (lineIndex < 0 || lineIndex >= Document.Lines.Count)
+                return null;
+
+            foreach (var block in _model.Blocks)
+            {
+                if (block.Kind != MarkdownBlockKind.Table)
+                    continue;
+
+                if (lineIndex >= block.StartLine && lineIndex <= block.EndLine)
+                {
+                    var tb = (TableBlock)block;
+                    return tb.Table;
+                }
+            }
+
+            return null;
+        }
     }
 }

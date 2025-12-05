@@ -49,12 +49,30 @@ namespace CanvasBoard.App.Views.Board
                 string rawLine = Document.Lines[lineIndex] ?? string.Empty;
 
                 var tableBlock = FindTableBlockForLine(lineIndex);
-                if (!isCaretLine && tableBlock != null)
+                if (tableBlock != null)
                 {
-                    if (vis.IsFirstSegmentOfLogicalLine)
-                        DrawTableRowFromModel(context, tableBlock, lineIndex, y, lineHeight);
+                    // Alignment row in markdown: the line right after header
+                    bool isAlignmentRow = (lineIndex == tableBlock.Table.StartLine + 1);
 
-                    y += lineHeight;
+                    // For table lines we ignore heading scaling and just use base height
+                    double rowHeight = baseLineHeight;
+
+                    // Draw selection background (alignment row has zero height)
+                    double selectionHeight = isAlignmentRow ? 0.0 : rowHeight;
+                    DrawSelectionForVisualLine(context, vis, y, selectionHeight);
+
+                    // Only once per table: draw the entire grid starting from the header line
+                    if (vis.IsFirstSegmentOfLogicalLine && lineIndex == tableBlock.Table.StartLine)
+                    {
+                        DrawTableFromModel(context, tableBlock, y, rowHeight);
+                    }
+
+                    // Vertical layout:
+                    //  - header & body lines advance by rowHeight
+                    //  - alignment row has zero height (no gap between header and first body row)
+                    if (!isAlignmentRow)
+                        y += rowHeight;
+
                     continue;
                 }
 
@@ -390,103 +408,6 @@ namespace CanvasBoard.App.Views.Board
         // ----------------------------
         // Table rendering
         // ----------------------------
-
-        private void DrawTableRow(DrawingContext context, TableModel table, int docLineIndex, double y)
-        {
-            int colCount = table.ColumnCount;
-            if (colCount <= 0)
-                return;
-
-            // Map document line index to table row index
-            bool isSeparatorRow = false;
-            int rowIndex;
-
-            if (docLineIndex == table.StartLine)
-            {
-                // Header row
-                rowIndex = 0;
-            }
-            else if (docLineIndex == table.StartLine + 1)
-            {
-                // Alignment/separator row (not in Rows collection)
-                isSeparatorRow = true;
-                rowIndex = -1;
-            }
-            else
-            {
-                // Body rows start at StartLine + 2
-                rowIndex = docLineIndex - (table.StartLine + 1);
-            }
-
-            double cw = GetCharWidth();
-
-            // Compute column widths in characters (based on cell content)
-            var colWidths = new int[colCount];
-            for (int c = 0; c < colCount; c++)
-            {
-                int max = 3;
-                for (int r = 0; r < table.RowCount; r++)
-                {
-                    string cellText = table.GetCell(r, c) ?? string.Empty;
-                    if (cellText.Length > max)
-                        max = cellText.Length;
-                }
-
-                // Add a little padding inside each cell
-                colWidths[c] = max + 2;
-            }
-
-            string line;
-
-            if (isSeparatorRow)
-            {
-                var pieces = new List<string>(colCount);
-                for (int c = 0; c < colCount; c++)
-                {
-                    var align = table.Alignments[c];
-                    int innerWidth = System.Math.Max(3, colWidths[c] - 2);
-
-                    string dashes = new string('-', innerWidth);
-                    string cell = align switch
-                    {
-                        TableAlignment.Left => ":" + dashes + " ",
-                        TableAlignment.Right => " " + dashes + ":",
-                        TableAlignment.Center => ":" + dashes + ":",
-                        _ => " " + dashes + " "
-                    };
-                    pieces.Add(cell);
-                }
-
-                line = "| " + string.Join(" | ", pieces) + " |";
-            }
-            else
-            {
-                int effectiveRowIndex = System.Math.Clamp(rowIndex, 0, table.RowCount - 1);
-                var cells = new List<string>(colCount);
-
-                for (int c = 0; c < colCount; c++)
-                {
-                    string cellText = table.GetCell(effectiveRowIndex, c) ?? string.Empty;
-                    int width = colWidths[c];
-
-                    string padded = AlignCellText(cellText, width, table.Alignments[c]);
-                    cells.Add(padded);
-                }
-
-                line = "| " + string.Join(" | ", cells) + " |";
-            }
-
-            var ft = new FormattedText(
-                line,
-                CultureInfo.CurrentCulture,
-                FlowDirection.LeftToRight,
-                GetTypefaceForLineKind(MarkdownLineKind.Normal),
-                BaseFontSize,
-                _foregroundBrush);
-
-            context.DrawText(ft, new Point(LeftPadding, y));
-        }
-
         private TableBlock? FindTableBlockForLine(int lineIndex)
         {
             if (_model == null)
@@ -508,132 +429,95 @@ namespace CanvasBoard.App.Views.Board
         // Table row rendering (model-based)
         // ----------------------------
 
-        private void DrawTableRowFromModel(
+        private void DrawTableFromModel(
             DrawingContext context,
             TableBlock tableBlock,
-            int docLineIndex,
             double y,
-            double lineHeight)
+            double rowHeight)
         {
             var table = tableBlock.Table;
+            int rowCount = table.RowCount;
             int colCount = table.ColumnCount;
-            if (colCount <= 0)
+
+            if (rowCount <= 0 || colCount <= 0)
                 return;
-
-            // Map document line index to table "row index"
-            // Row 0 = header (StartLine)
-            // Alignment row (StartLine + 1) is not in TableModel rows
-            // Body rows: docLine = StartLine + 1 + rowIndex
-            bool isSeparatorRow = false;
-            int rowIndex;
-
-            if (docLineIndex == table.StartLine)
-            {
-                // Header row
-                rowIndex = 0;
-            }
-            else if (docLineIndex == table.StartLine + 1)
-            {
-                // Alignment row
-                isSeparatorRow = true;
-                rowIndex = -1;
-            }
-            else
-            {
-                // Body rows start at StartLine + 2
-                rowIndex = docLineIndex - (table.StartLine + 1);
-            }
 
             double cw = GetCharWidth();
 
-            // Compute column widths in characters (based on cell content)
-            var colWidths = new int[colCount];
+            // Compute column widths in characters (max text length per column + padding)
+            var colWidthsChars = new double[colCount];
             for (int c = 0; c < colCount; c++)
             {
-                int max = 3;
-                for (int r = 0; r < table.RowCount; r++)
+                int max = 1;
+                for (int r = 0; r < rowCount; r++)
                 {
                     string cellText = table.GetCell(r, c) ?? string.Empty;
                     if (cellText.Length > max)
                         max = cellText.Length;
                 }
 
-                // Add a little padding inside each cell
-                colWidths[c] = max + 2;
+                // Inner padding of 2 "characters"
+                colWidthsChars[c] = max + 2;
             }
 
-            string line;
+            var colWidthsPx = new double[colCount];
+            for (int c = 0; c < colCount; c++)
+                colWidthsPx[c] = colWidthsChars[c] * cw;
 
-            if (isSeparatorRow)
+            double xStart = LeftPadding;
+            var borderPen = new Pen(_foregroundBrush, 0.5);
+
+            for (int r = 0; r < rowCount; r++)
             {
-                // Regenerate the alignment/separator row from TableAlignment
-                var pieces = new List<string>(colCount);
+                double rowTop = y + r * rowHeight;
+                double x = xStart;
+
                 for (int c = 0; c < colCount; c++)
                 {
-                    var align = table.Alignments[c];
-                    int innerWidth = Math.Max(3, colWidths[c] - 2);
+                    double cellWidth = colWidthsPx[c];
+                    var cellRect = new Rect(x, rowTop, cellWidth, rowHeight);
 
-                    string dashes = new string('-', innerWidth);
-                    string cell = align switch
+                    // Cell border – rows share borders, so the grid is visually joined
+                    context.DrawRectangle(null, borderPen, cellRect);
+
+                    string cellText = table.GetCell(r, c) ?? string.Empty;
+
+                    var ft = new FormattedText(
+                        cellText,
+                        CultureInfo.CurrentCulture,
+                        FlowDirection.LeftToRight,
+                        GetTypefaceForLineKind(r == 0 ? MarkdownLineKind.Heading : MarkdownLineKind.Normal),
+                        BaseFontSize,
+                        _foregroundBrush);
+
+                    // Approximate metrics – good enough for alignment
+                    double textWidthApprox = cw * System.Math.Max(1, cellText.Length);
+                    double textHeightApprox = BaseFontSize;
+
+                    // Horizontal alignment per column
+                    double textX;
+                    switch (table.Alignments[c])
                     {
-                        TableAlignment.Left   => ":" + dashes + " ",
-                        TableAlignment.Right  => " " + dashes + ":",
-                        TableAlignment.Center => ":" + dashes + ":",
-                        _                            => " " + dashes + " "
-                    };
-                    pieces.Add(cell);
+                        case TableAlignment.Right:
+                            textX = x + cellWidth - textWidthApprox - cw; // right + padding
+                            break;
+                        case TableAlignment.Center:
+                            textX = x + (cellWidth - textWidthApprox) / 2.0;
+                            break;
+                        default: // Left
+                            textX = x + cw; // left padding
+                            break;
+                    }
+
+                    // Vertical centering
+                    double textY = rowTop + (rowHeight - textHeightApprox) / 2.0;
+
+                    context.DrawText(ft, new Point(textX, textY));
+
+                    x += cellWidth;
                 }
-
-                line = "| " + string.Join(" | ", pieces) + " |";
             }
-            else
-            {
-                // Normal header/body row
-                int effectiveRowIndex = Math.Clamp(rowIndex, 0, table.RowCount - 1);
-                var cells = new List<string>(colCount);
-
-                for (int c = 0; c < colCount; c++)
-                {
-                    string cellText = table.GetCell(effectiveRowIndex, c) ?? string.Empty;
-                    int width = colWidths[c];
-
-                    string padded = AlignCellText(cellText, width, table.Alignments[c]);
-                    cells.Add(padded);
-                }
-
-                line = "| " + string.Join(" | ", cells) + " |";
-            }
-
-            var ft = new FormattedText(
-                line,
-                CultureInfo.CurrentCulture,
-                FlowDirection.LeftToRight,
-                GetTypefaceForLineKind(MarkdownLineKind.Normal),
-                BaseFontSize,
-                _foregroundBrush);
-
-            context.DrawText(ft, new Point(LeftPadding, y));
         }
-
-        private static string AlignCellText(
-            string text,
-            int width,
-            TableAlignment align)
-        {
-            text ??= string.Empty;
-            if (width <= text.Length)
-                return text;
-
-            int padding = width - text.Length;
-
-            return align switch
-            {
-                TableAlignment.Right  => new string(' ', padding) + text,
-                TableAlignment.Center => new string(' ', padding / 2) + text + new string(' ', padding - padding / 2),
-                _                     => text + new string(' ', padding),
-            };
-        }
-
 
         // ----------------------------
         // Horizontal rule rendering
