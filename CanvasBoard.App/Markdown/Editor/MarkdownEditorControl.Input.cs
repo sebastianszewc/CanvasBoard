@@ -193,10 +193,29 @@ namespace CanvasBoard.App.Views.Board
                     break;
 
                 case Key.Tab:
-                    // For now: insert spaces, not structural tab logic
-                    DeleteSelectionIfAny();
-                    Document.InsertText("    ");
-                    break;
+                {
+                    // Proper tab: indent/outdent current line or all selected lines using real '\t'
+                    int firstLine, lastLine;
+                    if (TryGetSelectionSpan(out var span))
+                    {
+                        firstLine = span.StartLine;
+                        lastLine = span.EndLine;
+                    }
+                    else
+                    {
+                        firstLine = lastLine = Document.CaretLine;
+                    }
+
+                    if (shift)
+                        OutdentLines(firstLine, lastLine);
+                    else
+                        IndentLines(firstLine, lastLine);
+
+                    _text = Document.GetText();
+                    InvalidateVisual();
+                    e.Handled = true;
+                    return;
+                }
 
                 default:
                     handled = false;
@@ -298,19 +317,45 @@ namespace CanvasBoard.App.Views.Board
             if (cw <= 0)
                 return startColumn;
 
-            int maxCol = System.Math.Min(rawLine.Length, startColumn + length);
-            if (maxCol <= startColumn)
+            int maxCharIndex = System.Math.Min(rawLine.Length, startColumn + length);
+
+            // Desired visual column
+            int targetCols = (int)System.Math.Round(localX / cw);
+            if (targetCols <= 0)
                 return startColumn;
 
-            // How many characters from startColumn does this x correspond to?
-            int offsetChars = (int)System.Math.Round(localX / cw);
-            int col = startColumn + offsetChars;
+            int col = 0;
+            int index = startColumn;
 
-            // Clamp into [startColumn, maxCol]
-            if (col < startColumn) col = startColumn;
-            if (col > maxCol) col = maxCol;
+            while (index < maxCharIndex)
+            {
+                char ch = rawLine[index];
 
-            return col;
+                int nextCol;
+                if (ch == '\t')
+                {
+                    nextCol = ((col / TabSize) + 1) * TabSize;
+                }
+                else
+                {
+                    nextCol = col + 1;
+                }
+
+                if (nextCol >= targetCols)
+                {
+                    // Decide whether to snap before or after this character
+                    int mid = (col + nextCol) / 2;
+                    if (targetCols <= mid)
+                        return index;       // before this char
+                    else
+                        return index + 1;   // after this char
+                }
+
+                col = nextCol;
+                index++;
+            }
+
+            return maxCharIndex;
         }
 
         // Move caret vertically between visual lines (wrapped segments)
@@ -371,12 +416,10 @@ namespace CanvasBoard.App.Views.Board
                     return;
             }
 
-            // Horizontal offset in characters from the visual segment start
-            int offsetInSegment = caretCol - currentVis.StartColumn;
-            if (offsetInSegment < 0)
-                offsetInSegment = 0;
-            if (offsetInSegment > currentVis.Length)
-                offsetInSegment = currentVis.Length;
+            string lineText = Document.Lines[caretLine] ?? string.Empty;
+
+            // Visual columns from segment start to caret
+            int currentCols = ComputeColumns(lineText, currentVis.StartColumn, caretCol - currentVis.StartColumn);
 
             int targetIndex = currentVisIndex + delta;
             if (targetIndex < 0 || targetIndex >= _visualLines.Count)
@@ -384,12 +427,37 @@ namespace CanvasBoard.App.Views.Board
 
             var targetVis = _visualLines[targetIndex];
 
-            // Clamp offset to the length of the target segment
-            int newOffset = offsetInSegment;
-            if (newOffset > targetVis.Length)
-                newOffset = targetVis.Length;
+            // Find character in target segment whose visual column is closest to currentCols
+            int segStart = targetVis.StartColumn;
+            int segEnd = segStart + targetVis.Length;
+            int col = 0;
+            int bestIndex = segStart;
+            int bestDiff = int.MaxValue;
 
-            int newCol = targetVis.StartColumn + newOffset;
+            for (int i = segStart; i <= segEnd; i++)
+            {
+                if (i > segStart)
+                {
+                    char ch = lineText[i - 1];
+                    if (ch == '\t')
+                    {
+                        col = ((col / TabSize) + 1) * TabSize;
+                    }
+                    else
+                    {
+                        col++;
+                    }
+                }
+
+                int diff = System.Math.Abs(col - currentCols);
+                if (diff < bestDiff)
+                {
+                    bestDiff = diff;
+                    bestIndex = i;
+                }
+            }
+
+            int newCol = bestIndex;
             string targetLine = Document.Lines[targetVis.DocLineIndex] ?? string.Empty;
             newCol = System.Math.Clamp(newCol, 0, targetLine.Length);
 

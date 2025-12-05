@@ -41,8 +41,11 @@ namespace CanvasBoard.App.Views.Board
         {
             var typeface = GetTypeface();
 
+            // Render: replace tabs with spaces for drawing (width is handled by ComputeColumns)
+            string display = line.Replace("\t", new string(' ', TabSize));
+
             var ft = new FormattedText(
-                line,
+                display,
                 CultureInfo.CurrentCulture,
                 FlowDirection.LeftToRight,
                 typeface,
@@ -72,8 +75,11 @@ namespace CanvasBoard.App.Views.Board
 
             var typeface = GetTypeface();
 
+            // Tabs rendered as spaces; geometry is still tab-aware via ComputeColumns.
+            string display = segmentText.Replace("\t", new string(' ', TabSize));
+
             var ft = new FormattedText(
-                segmentText,
+                display,
                 CultureInfo.CurrentCulture,
                 FlowDirection.LeftToRight,
                 typeface,
@@ -140,16 +146,20 @@ namespace CanvasBoard.App.Views.Board
             int segEnd = segStart + vis.Length;
 
             // Intersection of [lineSelStart, lineSelEnd) with [segStart, segEnd)
-            int start = System.Math.Max(lineSelStart, segStart);
-            int end = System.Math.Min(lineSelEnd, segEnd);
+            int startChar = System.Math.Max(lineSelStart, segStart);
+            int endChar = System.Math.Min(lineSelEnd, segEnd);
 
-            if (end <= start)
+            if (endChar <= startChar)
                 return;
 
             double cw = GetCharWidth();
 
-            double xStart = LeftPadding + (start - segStart) * cw;
-            double width = (end - start) * cw;
+            // Convert char indices to visual columns within this segment
+            int startCols = ComputeColumns(line, segStart, startChar - segStart);
+            int endCols = ComputeColumns(line, segStart, endChar - segStart);
+
+            double xStart = LeftPadding + startCols * cw;
+            double width = (endCols - startCols) * cw;
 
             var r = new Rect(xStart, y, width, lineHeight);
             context.FillRectangle(_selectionBrush, r);
@@ -190,11 +200,12 @@ namespace CanvasBoard.App.Views.Board
             if (caretVisual == null)
                 return;
 
-            // Offset in characters from the start of this visual segment
-            int colInSeg = caretCol - caretVisual.StartColumn;
             double cw = GetCharWidth();
 
-            double x = LeftPadding + cw * colInSeg;
+            // Visual columns from start of this segment to caret
+            int colsFromSegStart = ComputeColumns(lineText, caretVisual.StartColumn, caretCol - caretVisual.StartColumn);
+
+            double x = LeftPadding + colsFromSegStart * cw;
             double yTop = visualIndex * lineHeight;
             double yBottom = yTop + lineHeight;
 

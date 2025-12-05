@@ -77,28 +77,52 @@ namespace CanvasBoard.App.Views.Board
             if (cw <= 0)
                 return maxLen;
 
-            // Max characters that fit into the available width
-            int maxChars = (int)(textWidth / cw);
-            if (maxChars <= 0)
+            int maxColumns = (int)(textWidth / cw);
+            if (maxColumns <= 0)
                 return 1;
 
-            int best = Math.Min(maxLen, maxChars);
+            int bestChars = 0;
+            int col = 0;
+            int lineLen = line.Length;
+            int endLimit = Math.Min(start + maxLen, lineLen);
 
-            // Try to break at whitespace (word wrap) instead of mid-word
-            int endIndex = start + best;
-            if (endIndex < line.Length && !char.IsWhiteSpace(line[endIndex]))
+            // Greedily add characters while we have columns left
+            for (int idx = start; idx < endLimit; idx++)
             {
-                int lastSpace = line.LastIndexOf(' ', endIndex - 1, best);
+                char ch = line[idx];
+                if (ch == '\t')
+                {
+                    col = ((col / TabSize) + 1) * TabSize;
+                }
+                else
+                {
+                    col++;
+                }
+
+                if (col > maxColumns)
+                    break;
+
+                bestChars++;
+            }
+
+            if (bestChars <= 0)
+                bestChars = Math.Min(maxLen, 1);
+
+            // Word-aware backoff: avoid cutting a word if possible
+            int globalEndIndex = start + bestChars;
+            if (globalEndIndex < lineLen && !char.IsWhiteSpace(line[globalEndIndex]))
+            {
+                int lastSpace = line.LastIndexOf(' ', globalEndIndex - 1, bestChars);
                 if (lastSpace > start)
                 {
-                    best = lastSpace - start;
+                    bestChars = lastSpace - start;
                 }
             }
 
-            if (best <= 0)
-                best = Math.Min(maxLen, 1);
+            if (bestChars <= 0)
+                bestChars = Math.Min(maxLen, 1);
 
-            return best;
+            return bestChars;
         }
     }
 }
