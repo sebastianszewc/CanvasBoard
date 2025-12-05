@@ -410,22 +410,6 @@ namespace CanvasBoard.App.Views.Board
             };
         }
 
-        // ----------------------------
-        // Tables
-        // ----------------------------
-
-        private TableEngine? _tableEngine;
-
-        private void RebuildTableEngine()
-        {
-            _tableEngine = new TableEngine(Document);
-        }
-
-        private TableModel? FindTableForLine(int lineIndex)
-        {
-            return _tableEngine?.FindTableAtLine(lineIndex);
-        }
-
         // High-level parsed model (blocks, including tables)
         private MarkdownDocumentModel? _model;
 

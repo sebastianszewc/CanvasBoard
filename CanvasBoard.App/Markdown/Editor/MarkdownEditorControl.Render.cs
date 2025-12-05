@@ -5,6 +5,7 @@ using Avalonia;
 using Avalonia.Media;
 using CanvasBoard.App.Markdown.Document;
 using CanvasBoard.App.Markdown.Tables;
+using CanvasBoard.App.Markdown.Model;
 
 namespace CanvasBoard.App.Views.Board
 {
@@ -31,6 +32,21 @@ namespace CanvasBoard.App.Views.Board
                 DrawSelectionForVisualLine(context, vis, y, lineHeight);
 
                 int lineIndex = vis.DocLineIndex;
+                bool isCaretLine = (lineIndex == Document.CaretLine);
+
+                // NEW: table-aware rendering for non-caret lines
+                var tableBlock = FindTableBlockForLine(lineIndex);
+                if (!isCaretLine && tableBlock != null)
+                {
+                    // Draw each table line once, on its first visual segment
+                    if (vis.IsFirstSegmentOfLogicalLine)
+                    {
+                        DrawTableRowFromModel(context, tableBlock, lineIndex, y);
+                    }
+
+                    // Skip normal segment drawing for this visual line
+                    continue;
+                }
 
                 string rawLine = Document.Lines[lineIndex] ?? string.Empty;
 
@@ -395,9 +411,139 @@ namespace CanvasBoard.App.Views.Board
             context.DrawText(ft, new Point(LeftPadding, y));
         }
 
-        private static string AlignCellText(string text, int width, TableAlignment align)
+        private TableBlock? FindTableBlockForLine(int lineIndex)
         {
-            text = text ?? string.Empty;
+            if (_model == null)
+                return null;
+
+            foreach (var block in _model.Blocks)
+            {
+                if (block.Kind != MarkdownBlockKind.Table)
+                    continue;
+
+                if (lineIndex >= block.StartLine && lineIndex <= block.EndLine)
+                    return (TableBlock)block;
+            }
+
+            return null;
+        }    
+    
+        // ----------------------------
+        // Table row rendering (model-based)
+        // ----------------------------
+
+        private void DrawTableRowFromModel(
+            DrawingContext context,
+            TableBlock tableBlock,
+            int docLineIndex,
+            double y)
+        {
+            var table = tableBlock.Table;
+            int colCount = table.ColumnCount;
+            if (colCount <= 0)
+                return;
+
+            // Map document line index to table "row index"
+            // Row 0 = header (StartLine)
+            // Alignment row (StartLine + 1) is not in TableModel rows
+            // Body rows: docLine = StartLine + 1 + rowIndex
+            bool isSeparatorRow = false;
+            int rowIndex;
+
+            if (docLineIndex == table.StartLine)
+            {
+                // Header row
+                rowIndex = 0;
+            }
+            else if (docLineIndex == table.StartLine + 1)
+            {
+                // Alignment row
+                isSeparatorRow = true;
+                rowIndex = -1;
+            }
+            else
+            {
+                // Body rows start at StartLine + 2
+                rowIndex = docLineIndex - (table.StartLine + 1);
+            }
+
+            double cw = GetCharWidth();
+
+            // Compute column widths in characters (based on cell content)
+            var colWidths = new int[colCount];
+            for (int c = 0; c < colCount; c++)
+            {
+                int max = 3;
+                for (int r = 0; r < table.RowCount; r++)
+                {
+                    string cellText = table.GetCell(r, c) ?? string.Empty;
+                    if (cellText.Length > max)
+                        max = cellText.Length;
+                }
+
+                // Add a little padding inside each cell
+                colWidths[c] = max + 2;
+            }
+
+            string line;
+
+            if (isSeparatorRow)
+            {
+                // Regenerate the alignment/separator row from TableAlignment
+                var pieces = new List<string>(colCount);
+                for (int c = 0; c < colCount; c++)
+                {
+                    var align = table.Alignments[c];
+                    int innerWidth = Math.Max(3, colWidths[c] - 2);
+
+                    string dashes = new string('-', innerWidth);
+                    string cell = align switch
+                    {
+                        TableAlignment.Left   => ":" + dashes + " ",
+                        TableAlignment.Right  => " " + dashes + ":",
+                        TableAlignment.Center => ":" + dashes + ":",
+                        _                            => " " + dashes + " "
+                    };
+                    pieces.Add(cell);
+                }
+
+                line = "| " + string.Join(" | ", pieces) + " |";
+            }
+            else
+            {
+                // Normal header/body row
+                int effectiveRowIndex = Math.Clamp(rowIndex, 0, table.RowCount - 1);
+                var cells = new List<string>(colCount);
+
+                for (int c = 0; c < colCount; c++)
+                {
+                    string cellText = table.GetCell(effectiveRowIndex, c) ?? string.Empty;
+                    int width = colWidths[c];
+
+                    string padded = AlignCellText(cellText, width, table.Alignments[c]);
+                    cells.Add(padded);
+                }
+
+                line = "| " + string.Join(" | ", cells) + " |";
+            }
+
+            var ft = new FormattedText(
+                line,
+                CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight,
+                GetTypefaceForLineKind(MarkdownLineKind.Normal),
+                BaseFontSize,
+                _foregroundBrush);
+
+            context.DrawText(ft, new Point(LeftPadding, y));
+        }
+
+        private static string AlignCellText(
+            string text,
+            int width,
+            TableAlignment align)
+        {
+            text ??= string.Empty;
             if (width <= text.Length)
                 return text;
 
@@ -405,14 +551,9 @@ namespace CanvasBoard.App.Views.Board
 
             return align switch
             {
-                TableAlignment.Right =>
-                    new string(' ', padding) + text,
-
-                TableAlignment.Center =>
-                    new string(' ', padding / 2) + text + new string(' ', padding - padding / 2),
-
-                _ => // Left or Default
-                    text + new string(' ', padding),
+                TableAlignment.Right  => new string(' ', padding) + text,
+                TableAlignment.Center => new string(' ', padding / 2) + text + new string(' ', padding - padding / 2),
+                _                     => text + new string(' ', padding),
             };
         }
     }

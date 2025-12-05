@@ -20,8 +20,7 @@ namespace CanvasBoard.App.Views.Board
             EnsureInlineStyles();
 
             // Then table detection
-            RebuildTableEngine();
-
+        
             _visualLines.Clear();
 
             if (double.IsNaN(availableWidth) || double.IsInfinity(availableWidth) || availableWidth <= 0)
