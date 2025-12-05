@@ -1439,8 +1439,6 @@ namespace CanvasBoard.App.Views.Board
 
         private bool IsCaretInTableStructure()
         {
-            // Ensure table engine is fresh
-
             int lineIndex = Document.CaretLine;
             if (lineIndex < 0 || lineIndex >= Document.Lines.Count)
                 return false;
@@ -1449,11 +1447,25 @@ namespace CanvasBoard.App.Views.Board
             if (table == null)
                 return false;
 
-            // If caret is inside a regular cell, it's NOT "structure"
-            if (TryGetCurrentTableCell(out _, out _, out _))
-                return false;
+            // Alignment row (|:---| etc.) is pure structure
+            if (lineIndex == table.StartLine + 1)
+                return true;
 
-            // We're in a table, but not in a cell -> pipes or alignment row
+            string line = Document.Lines[lineIndex] ?? string.Empty;
+            int col = System.Math.Clamp(Document.CaretColumn, 0, line.Length);
+
+            var segments = ComputeTableLineSegments(line);
+            if (segments.Count == 0)
+                return true; // treat as structure
+
+            // Inside any cell segment? then it's NOT structure
+            foreach (var seg in segments)
+            {
+                if (col >= seg.Start && col < seg.End)
+                    return false;
+            }
+
+            // We're in a table, but not in a cell segment -> pipes / gaps -> structure
             return true;
         }
 
@@ -1481,5 +1493,7 @@ namespace CanvasBoard.App.Views.Board
 
             return null;
         }
+   
+   
     }
 }

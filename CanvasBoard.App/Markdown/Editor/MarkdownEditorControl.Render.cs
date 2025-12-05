@@ -335,7 +335,6 @@ namespace CanvasBoard.App.Views.Board
             var r = new Rect(xStart, y, width, lineHeight);
             context.FillRectangle(_selectionBrush, r);
         }
-
         private void DrawCaret(DrawingContext context, double baseLineHeight)
         {
             int caretLine = Document.CaretLine;
@@ -347,9 +346,9 @@ namespace CanvasBoard.App.Views.Board
             string lineText = Document.Lines[caretLine] ?? string.Empty;
             caretCol = System.Math.Clamp(caretCol, 0, lineText.Length);
 
-            // 1) Find visual segment containing the caret
+            // 1) Find visual line segment where caret is
             int caretVisualIndex = -1;
-            VisualLine? caretVis = null;
+            VisualLine? caretVisual = null;
 
             for (int i = 0; i < _visualLines.Count; i++)
             {
@@ -360,50 +359,150 @@ namespace CanvasBoard.App.Views.Board
                 int start = v.StartColumn;
                 int end = start + v.Length;
 
-                if ((v.Length == 0 && caretCol == 0) ||
-                    (caretCol >= start && caretCol <= end))
+                // Empty line case
+                if (v.Length == 0 && caretCol == 0)
                 {
                     caretVisualIndex = i;
-                    caretVis = v;
+                    caretVisual = v;
+                    break;
+                }
+
+                if (caretCol >= start && caretCol <= end)
+                {
+                    caretVisualIndex = i;
+                    caretVisual = v;
                     break;
                 }
             }
 
-            if (caretVis == null)
+            if (caretVisual == null || caretVisualIndex < 0)
                 return;
 
-            // 2) Accumulate Y using same heading-aware heights as Render
+            // 2) Accumulate Y using the SAME logic as Render
             double y = 0.0;
-            for (int i = 0; i < caretVisualIndex; i++)
+
+            for (int i = 0; i < _visualLines.Count && i < caretVisualIndex; i++)
             {
                 var vis = _visualLines[i];
                 int lineIndex = vis.DocLineIndex;
 
+                // Is this line part of a table?
+                var tb = FindTableBlockForLine(lineIndex);
+                if (tb != null)
+                {
+                    // Alignment row has zero height
+                    bool isAlignmentRow = (lineIndex == tb.Table.StartLine + 1);
+                    if (!isAlignmentRow)
+                        y += baseLineHeight;
+
+                    continue;
+                }
+
+                // Non-table: use heading-aware height
                 double lineHeight = baseLineHeight;
                 int level = GetHeadingLevelForLine(lineIndex);
                 if (level > 0 && level < HeadingLineHeightFactors.Length)
-                {
                     lineHeight = baseLineHeight * HeadingLineHeightFactors[level];
-                }
 
                 y += lineHeight;
             }
 
-            // 3) Compute X within this segment (tabs-aware)
             double cw = GetCharWidth();
-            int localStart = caretVis.StartColumn;
-            int clampedCol = caretCol;
-            if (clampedCol < localStart) clampedCol = localStart;
-            if (clampedCol > localStart + caretVis.Length) clampedCol = localStart + caretVis.Length;
+            double x;
 
-            int colsFromSegStart = ComputeColumns(lineText, localStart, clampedCol - localStart);
-            double x = LeftPadding + colsFromSegStart * cw;
+            // 3) If caret is inside a table cell, compute X using the table grid
+            if (TryGetCurrentTableCell(out TableBlock tableBlock, out int rowIndex, out int colIndex))
+            {
+                var table = tableBlock.Table;
+                int colCount = table.ColumnCount;
 
-            // 4) Draw caret with base height
+                if (colCount <= 0)
+                    return;
+
+                // Column widths in chars (same logic as DrawTableFromModel)
+                var colWidthsChars = new double[colCount];
+                for (int c = 0; c < colCount; c++)
+                {
+                    int max = 1;
+                    for (int r = 0; r < table.RowCount; r++)
+                    {
+                        string cellTextForWidth = table.GetCell(r, c) ?? string.Empty;
+                        if (cellTextForWidth.Length > max)
+                            max = cellTextForWidth.Length;
+                    }
+                    colWidthsChars[c] = max + 2; // + padding
+                }
+
+                var colWidthsPx = new double[colCount];
+                for (int c = 0; c < colCount; c++)
+                    colWidthsPx[c] = colWidthsChars[c] * cw;
+
+                // Cell left X based on column widths
+                double cellLeft = LeftPadding;
+                for (int c = 0; c < colIndex; c++)
+                    cellLeft += colWidthsPx[c];
+
+                double cellWidth = colWidthsPx[colIndex];
+
+                // Text within that cell (for alignment & width)
+                string cellText = table.GetCell(rowIndex, colIndex) ?? string.Empty;
+                int textLen = cellText.Length;
+
+                double textWidthApprox = cw * System.Math.Max(1, textLen);
+
+                // Approximate character index within the cell from the raw line
+                int localCharIndex = 0;
+                var segments = ComputeTableLineSegments(lineText);
+                if (colIndex >= 0 && colIndex < segments.Count)
+                {
+                    var seg = segments[colIndex];
+                    int clampedCol = System.Math.Clamp(caretCol, seg.Start, seg.End);
+                    localCharIndex = clampedCol - seg.Start;
+                }
+
+                int charIndexInCell = System.Math.Clamp(localCharIndex, 0, textLen);
+
+                // Text left X based on column alignment
+                double textX;
+                switch (table.Alignments[colIndex])
+                {
+                    case TableAlignment.Right:
+                        textX = cellLeft + cellWidth - textWidthApprox - cw; // right + padding
+                        break;
+                    case TableAlignment.Center:
+                        textX = cellLeft + (cellWidth - textWidthApprox) / 2.0;
+                        break;
+                    default: // Left
+                        textX = cellLeft + cw; // left padding
+                        break;
+                }
+
+                double caretX = textX + charIndexInCell * cw;
+
+                // Clamp caret X to stay inside the cell a bit
+                double minX = cellLeft + cw * 0.3;
+                double maxX = cellLeft + cellWidth - cw * 0.3;
+                if (caretX < minX) caretX = minX;
+                if (caretX > maxX) caretX = maxX;
+
+                x = caretX;
+            }
+            else
+            {
+                // 4) Non-table (or table-structure, not inside a cell): original text-based X
+                int localStart = caretVisual.StartColumn;
+                int clampedCol = caretCol;
+                if (clampedCol < localStart) clampedCol = localStart;
+                if (clampedCol > localStart + caretVisual.Length) clampedCol = localStart + caretVisual.Length;
+
+                int colsFromSegStart = ComputeColumns(lineText, localStart, clampedCol - localStart);
+                x = LeftPadding + colsFromSegStart * cw;
+            }
+
+            // 5) Draw caret with base height
             var caretRect = new Rect(x, y, 1.0, baseLineHeight);
             context.FillRectangle(_foregroundBrush, caretRect);
         }
-
 
         // ----------------------------
         // Table rendering
