@@ -39,40 +39,125 @@ namespace CanvasBoard.App.Views.Board
 
         private void DrawSegment(DrawingContext context, string rawLine, VisualLine vis, double y)
         {
-            string segmentText = string.Empty;
-
-            if (!string.IsNullOrEmpty(rawLine))
+            // Caret line: raw/plain rendering, no inline styling
+            if (vis.DocLineIndex == Document.CaretLine)
             {
-                int start = vis.StartColumn;
-                int len = vis.Length;
+                string segmentText = string.Empty;
 
-                if (start >= 0 && start < rawLine.Length && len > 0)
+                if (!string.IsNullOrEmpty(rawLine))
                 {
-                    if (start + len > rawLine.Length)
-                        len = rawLine.Length - start;
+                    int start = vis.StartColumn;
+                    int len = vis.Length;
 
-                    segmentText = rawLine.Substring(start, len);
+                    if (start >= 0 && start < rawLine.Length && len > 0)
+                    {
+                        if (start + len > rawLine.Length)
+                            len = rawLine.Length - start;
+
+                        segmentText = rawLine.Substring(start, len);
+                    }
                 }
+
+                string displayPlain = segmentText.Replace("\t", new string(' ', TabSize));
+
+                var ftPlain = new FormattedText(
+                    displayPlain,
+                    CultureInfo.CurrentCulture,
+                    FlowDirection.LeftToRight,
+                    GetTypefaceForLineKind(MarkdownLineKind.Normal),
+                    BaseFontSize,
+                    _foregroundBrush);
+
+                context.DrawText(ftPlain, new Point(LeftPadding, y));
+                return;
             }
 
-            // Render tabs as spaces to keep columns aligned visually
-            string display = segmentText.Replace("\t", new string(' ', TabSize));
+            // Non-caret lines: use inline styling
+            var lineKind = GetLineKind(vis.DocLineIndex);
+            var inlineRuns = GetInlineRunsForLine(vis.DocLineIndex);
 
-            // Determine markdown kind for this line (caret line always Normal)
-            var kind = GetLineKind(vis.DocLineIndex);
-            var typeface = GetTypefaceForLineKind(kind);
-            var brush = GetBrushForLineKind(kind);
+            if (inlineRuns == null || inlineRuns.Count == 0)
+            {
+                // Fallback: draw as plain with block-level style
+                string segmentText = string.Empty;
 
-            var ft = new FormattedText(
-                display,
-                CultureInfo.CurrentCulture,
-                FlowDirection.LeftToRight,
-                typeface,
-                BaseFontSize,
-                brush);
+                if (!string.IsNullOrEmpty(rawLine))
+                {
+                    int start = vis.StartColumn;
+                    int len = vis.Length;
 
-            context.DrawText(ft, new Point(LeftPadding, y));
+                    if (start >= 0 && start < rawLine.Length && len > 0)
+                    {
+                        if (start + len > rawLine.Length)
+                            len = rawLine.Length - start;
+
+                        segmentText = rawLine.Substring(start, len);
+                    }
+                }
+
+                string display = segmentText.Replace("\t", new string(' ', TabSize));
+
+                var ft = new FormattedText(
+                    display,
+                    CultureInfo.CurrentCulture,
+                    FlowDirection.LeftToRight,
+                    GetTypefaceForLineKind(lineKind),
+                    BaseFontSize,
+                    GetBrushForLineKind(lineKind));
+
+                context.DrawText(ft, new Point(LeftPadding, y));
+                return;
+            }
+
+            string lineText = rawLine ?? string.Empty;
+            double cw = GetCharWidth();
+            int segStart = vis.StartColumn;
+            int segEnd = segStart + vis.Length;
+
+            if (segStart < 0) segStart = 0;
+            if (segEnd > lineText.Length) segEnd = lineText.Length;
+
+            if (segEnd <= segStart)
+                return;
+
+            // Iterate through inline runs that intersect this visual segment
+            foreach (var r in inlineRuns)
+            {
+                int runStart = r.StartColumn;
+                int runEnd = runStart + r.Length;
+
+                // Intersection with segment
+                int partStart = System.Math.Max(segStart, runStart);
+                int partEnd   = System.Math.Min(segEnd, runEnd);
+
+                if (partEnd <= partStart)
+                    continue;
+
+                int lengthChars = partEnd - partStart;
+                if (lengthChars <= 0)
+                    continue;
+
+                string rawSlice = lineText.Substring(partStart, lengthChars);
+                string displaySlice = rawSlice.Replace("\t", new string(' ', TabSize));
+
+                // Visual columns from segment start to this piece start
+                int colsBefore = ComputeColumns(lineText, segStart, partStart - segStart);
+                double x = LeftPadding + colsBefore * cw;
+
+                var (typeface, brush) = GetStyleForInline(lineKind, r.Styles);
+
+                var ft = new FormattedText(
+                    displaySlice,
+                    CultureInfo.CurrentCulture,
+                    FlowDirection.LeftToRight,
+                    typeface,
+                    BaseFontSize,
+                    brush);
+
+                context.DrawText(ft, new Point(x, y));
+            }
         }
+
 
         private void DrawSelectionForVisualLine(
             DrawingContext context,
@@ -132,7 +217,7 @@ namespace CanvasBoard.App.Views.Board
 
             // Intersection of [lineSelStart, lineSelEnd) with [segStart, segEnd)
             int startChar = System.Math.Max(lineSelStart, segStart);
-            int endChar = System.Math.Min(lineSelEnd, segEnd);
+            int endChar   = System.Math.Min(lineSelEnd, segEnd);
 
             if (endChar <= startChar)
                 return;

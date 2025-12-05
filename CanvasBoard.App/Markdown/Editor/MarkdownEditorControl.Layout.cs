@@ -13,6 +13,8 @@ namespace CanvasBoard.App.Views.Board
         {
             // Recompute markdown block styles first
             EnsureMarkdownStyles();
+    
+            EnsureInlineStyles();
 
             _visualLines.Clear();
 
