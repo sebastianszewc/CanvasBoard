@@ -5,6 +5,8 @@ using Avalonia.Input;
 using CanvasBoard.App.Markdown.Document;
 using System.Collections.Generic;
 using CanvasBoard.App.Markdown.Model;
+using CanvasBoard.App.Markdown.Tables;
+
 
 
 namespace CanvasBoard.App.Views.Board
@@ -58,6 +60,16 @@ namespace CanvasBoard.App.Views.Board
             {
                 switch (e.Key)
                 {
+                    case Key.T:
+                        if (shift)
+                        {
+                            if (ReformatCurrentTable())
+                            {
+                                e.Handled = true;
+                                return;
+                            }
+                        }
+                        break;
                     case Key.Z:
                         if (shift)
                             Redo();
@@ -1253,5 +1265,160 @@ namespace CanvasBoard.App.Views.Board
             }
             return segments;
         }
+
+        // ----------------------------
+        // Table reformatting (Ctrl+Shift+T)
+        // ----------------------------
+
+        private bool ReformatCurrentTable()
+        {
+            // Ensure model is up to date
+            EnsureModel();
+
+            int lineIndex = Document.CaretLine;
+            int caretCol = Document.CaretColumn;
+
+            if (lineIndex < 0 || lineIndex >= Document.Lines.Count)
+                return false;
+
+            int offset = Document.GetOffset(lineIndex, caretCol);
+
+            var tableBlock = FindTableBlockAtOffset(offset);
+            if (tableBlock == null)
+                return false;
+
+            var table = tableBlock.Table;
+
+            if (table.ColumnCount <= 0 || table.RowCount <= 0)
+                return false;
+
+            string newTableText = BuildReformattedTableText(table);
+
+            // Replace from start of header line to end of last row line
+            int startLine = tableBlock.StartLine;
+            int endLine = tableBlock.EndLine;
+
+            string lastLineText = Document.Lines[endLine] ?? string.Empty;
+
+            var span = new LineSpan(
+                startLine,
+                0,
+                endLine,
+                lastLineText.Length);
+
+            var op = ReplaceRangeOperation.CreateAndApply(
+                Document,
+                this,
+                span,
+                newTableText,
+                clearSelectionAfter: true);
+
+            PushOperation(op, allowMerge: false);
+            _text = Document.GetText();
+            InvalidateVisual();
+
+            return true;
+        }
+
+        private static string BuildReformattedTableText(TableModel table)
+        {
+            int rows = table.RowCount;
+            int cols = table.ColumnCount;
+
+            var colWidths = new int[cols];
+
+            // Determine column widths from cell contents
+            for (int c = 0; c < cols; c++)
+            {
+                int max = 3; // minimum
+                for (int r = 0; r < rows; r++)
+                {
+                    string cell = table.GetCell(r, c) ?? string.Empty;
+                    if (cell.Length > max)
+                        max = cell.Length;
+                }
+
+                colWidths[c] = max;
+            }
+
+            var lines = new List<string>();
+
+            // Header row (row 0)
+            {
+                var cells = new List<string>(cols);
+                for (int c = 0; c < cols; c++)
+                {
+                    string cellText = table.GetCell(0, c) ?? string.Empty;
+                    string padded = PadCell(cellText, colWidths[c], table.Alignments[c]);
+                    cells.Add(padded);
+                }
+
+                string headerLine = "| " + string.Join(" | ", cells) + " |";
+                lines.Add(headerLine);
+            }
+
+            // Alignment/separator row
+            {
+                var pieces = new List<string>(cols);
+                for (int c = 0; c < cols; c++)
+                {
+                    var align = table.Alignments[c];
+                    int innerWidth = Math.Max(3, colWidths[c] - 2);
+
+                    string dashes = new string('-', innerWidth);
+                    string cell = align switch
+                    {
+                        TableAlignment.Left   => ":" + dashes + " ",
+                        TableAlignment.Right  => " " + dashes + ":",
+                        TableAlignment.Center => ":" + dashes + ":",
+                        _                     => " " + dashes + " "
+                    };
+                    pieces.Add(cell);
+                }
+
+                string alignLine = "| " + string.Join(" | ", pieces) + " |";
+                lines.Add(alignLine);
+            }
+
+            // Body rows: rows 1..rows-1
+            for (int r = 1; r < rows; r++)
+            {
+                var cells = new List<string>(cols);
+                for (int c = 0; c < cols; c++)
+                {
+                    string cellText = table.GetCell(r, c) ?? string.Empty;
+                    string padded = PadCell(cellText, colWidths[c], table.Alignments[c]);
+                    cells.Add(padded);
+                }
+
+                string rowLine = "| " + string.Join(" | ", cells) + " |";
+                lines.Add(rowLine);
+            }
+
+            return string.Join("\n", lines);
+        }
+
+        private static string PadCell(string text, int width, TableAlignment align)
+        {
+            text ??= string.Empty;
+
+            if (width < text.Length)
+                width = text.Length;
+
+            int padding = width - text.Length;
+
+            return align switch
+            {
+                TableAlignment.Right =>
+                    new string(' ', padding) + text,
+
+                TableAlignment.Center =>
+                    new string(' ', padding / 2) + text + new string(' ', padding - padding / 2),
+
+                _ => // Left or Default
+                    text + new string(' ', padding),
+            };
+        }
+
     }
 }

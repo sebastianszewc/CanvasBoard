@@ -47,6 +47,30 @@ namespace CanvasBoard.App.Views.Board
 
         private double LineHeight => BaseFontSize * LineSpacing;
 
+        // Per-heading-level font size offsets (relative to BaseFontSize)
+        private static readonly double[] HeadingFontSizeOffsets =
+        {
+            0.0, // index 0 unused
+            30.0, // H1
+            6.0, // H2
+            4.0, // H3
+            3.0, // H4
+            2.0, // H5
+            1.0  // H6
+        };
+
+        // Per-heading-level line-height multipliers (relative to LineHeight)
+        private static readonly double[] HeadingLineHeightFactors =
+        {
+            1.0,  // index 0 unused
+            4.8,  // H1
+            1.6,  // H2
+            1.4,  // H3
+            1.25, // H4
+            1.15, // H5
+            1.08  // H6
+        };
+
         private readonly Typeface _baseTypeface =
             new(new FontFamily("Consolas"), FontStyle.Normal, FontWeight.Normal);
 

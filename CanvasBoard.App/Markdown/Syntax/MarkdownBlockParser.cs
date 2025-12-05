@@ -8,9 +8,13 @@ namespace CanvasBoard.App.Markdown.Syntax
 {
     /// <summary>
     /// Builds a high-level block model (MarkdownDocumentModel) from the
-    /// underlying MarkdownDocument text. For now we:
-    /// - Group tables into TableBlock (with per-cell spans).
-    /// - Group all other regions into simple Paragraph blocks.
+    /// underlying MarkdownDocument text.
+    ///
+    /// Currently supports:
+    /// - Paragraph blocks
+    /// - Heading blocks (# .. ######)
+    /// - Horizontal rules (---, *** , ___)
+    /// - TableBlock (using TableParser + per-cell spans)
     /// </summary>
     public static class MarkdownBlockParser
     {
@@ -37,13 +41,12 @@ namespace CanvasBoard.App.Markdown.Syntax
             int line = 0;
             while (line < lineCount)
             {
-                // If current line is the start of the next table, emit a TableBlock
+                // TABLE
                 if (tableIdx < tables.Count &&
                     line == tables[tableIdx].StartLine)
                 {
                     var t = tables[tableIdx];
 
-                    // Compute absolute span for the table (start of header to end of last row)
                     int startLine = t.StartLine;
                     int endLine = t.EndLine;
 
@@ -53,7 +56,6 @@ namespace CanvasBoard.App.Markdown.Syntax
 
                     var span = new TextSpan(startOffset, endOffset);
 
-                    // Build cell spans (header + body rows, excluding alignment row)
                     var cellSpans = BuildCellSpans(document, t);
 
                     var tableBlock = new TableBlock(
@@ -65,40 +67,97 @@ namespace CanvasBoard.App.Markdown.Syntax
 
                     blocks.Add(tableBlock);
 
-                    // Skip past this table
                     line = endLine + 1;
                     tableIdx++;
+                    continue;
                 }
-                else
+
+                // NON-TABLE REGION: check for headings, HR, then paragraphs
+
+                string current = lines[line] ?? string.Empty;
+
+                // Skip pure blank lines (no block)
+                if (string.IsNullOrWhiteSpace(current))
                 {
-                    // Non-table region: collect consecutive non-table lines into one block
-                    int startLine = line;
+                    line++;
+                    continue;
+                }
 
-                    while (line < lineCount &&
-                           !(tableIdx < tables.Count && line == tables[tableIdx].StartLine))
+                // HEADING?
+                if (TryParseAtxHeading(current, out int level))
+                {
+                    int startOffset = document.GetOffset(line, 0);
+                    int endOffset = document.GetOffset(line, current.Length);
+                    var span = new TextSpan(startOffset, endOffset);
+
+                    var heading = new HeadingBlock(
+                        span,
+                        line,
+                        line,
+                        level);
+
+                    blocks.Add(heading);
+                    line++;
+                    continue;
+                }
+
+                // HORIZONTAL RULE?
+                if (IsHorizontalRuleLine(current))
+                {
+                    int startOffset = document.GetOffset(line, 0);
+                    int endOffset = document.GetOffset(line, current.Length);
+                    var span = new TextSpan(startOffset, endOffset);
+
+                    var hr = new SimpleBlock(
+                        MarkdownBlockKind.HorizontalRule,
+                        span,
+                        line,
+                        line);
+
+                    blocks.Add(hr);
+                    line++;
+                    continue;
+                }
+
+                // PARAGRAPH: collect consecutive non-table, non-blank, non-heading, non-HR lines
+                int paraStartLine = line;
+
+                while (line < lineCount)
+                {
+                    if (tableIdx < tables.Count &&
+                        line == tables[tableIdx].StartLine)
                     {
-                        line++;
+                        break; // next table starts
                     }
 
-                    int endLine = line - 1;
+                    string ltext = lines[line] ?? string.Empty;
 
-                    if (endLine >= startLine)
-                    {
-                        int startOffset = document.GetOffset(startLine, 0);
-                        string lastLineText = lines[endLine] ?? string.Empty;
-                        int endOffset = document.GetOffset(endLine, lastLineText.Length);
+                    if (string.IsNullOrWhiteSpace(ltext))
+                        break; // blank = paragraph boundary
 
-                        var span = new TextSpan(startOffset, endOffset);
+                    if (TryParseAtxHeading(ltext, out _) || IsHorizontalRuleLine(ltext))
+                        break; // next heading / HR starts new block
 
-                        // For now, treat all non-table blocks as Paragraphs.
-                        var block = new SimpleBlock(
-                            MarkdownBlockKind.Paragraph,
-                            span,
-                            startLine,
-                            endLine);
+                    line++;
+                }
 
-                        blocks.Add(block);
-                    }
+                int paraEndLine = line - 1;
+
+                if (paraEndLine >= paraStartLine)
+                {
+                    int startOffset = document.GetOffset(paraStartLine, 0);
+                    string lastLineText2 = lines[paraEndLine] ?? string.Empty;
+                    int endOffset = document.GetOffset(paraEndLine, lastLineText2.Length);
+
+                    var span = new TextSpan(startOffset, endOffset);
+
+                    var para = new SimpleBlock(
+                        MarkdownBlockKind.Paragraph,
+                        span,
+                        paraStartLine,
+                        paraEndLine);
+
+                    blocks.Add(para);
                 }
             }
 
@@ -134,11 +193,8 @@ namespace CanvasBoard.App.Markdown.Syntax
 
                 if (docLine < 0 || docLine >= document.Lines.Count)
                 {
-                    // Fallback: empty spans
                     for (int c = 0; c < cols; c++)
-                    {
                         spans[r, c] = new TextSpan(0, 0);
-                    }
                     continue;
                 }
 
@@ -154,7 +210,6 @@ namespace CanvasBoard.App.Markdown.Syntax
                         int start = seg.Start;
                         int end = seg.End;
 
-                        // Trim whitespace inside segment to get the "content" span
                         while (start < end &&
                                (lineText[start] == ' ' || lineText[start] == '\t' || lineText[start] == '|'))
                         {
@@ -174,7 +229,6 @@ namespace CanvasBoard.App.Markdown.Syntax
                     }
                     else
                     {
-                        // Missing cell: zero-length span at end of line
                         int lineLen = lineText.Length;
                         int offset = document.GetOffset(docLine, lineLen);
                         spans[r, c] = new TextSpan(offset, offset);
@@ -197,10 +251,6 @@ namespace CanvasBoard.App.Markdown.Syntax
             }
         }
 
-        /// <summary>
-        /// Compute raw cell segments for a table line based on '|' positions.
-        /// We don't validate column count here; the caller will clamp.
-        /// </summary>
         private static List<CellSegment> ComputeCellSegmentsForLine(string line)
         {
             var segments = new List<CellSegment>();
@@ -210,7 +260,6 @@ namespace CanvasBoard.App.Markdown.Syntax
 
             int len = line.Length;
 
-            // Collect positions of all '|' characters
             var bars = new List<int>();
             for (int i = 0; i < len; i++)
             {
@@ -220,12 +269,10 @@ namespace CanvasBoard.App.Markdown.Syntax
 
             if (bars.Count == 0)
             {
-                // No pipes: treat whole line as a single segment
                 segments.Add(new CellSegment(0, len));
                 return segments;
             }
 
-            // Detect leading pipe after optional whitespace
             int firstNonWs = 0;
             while (firstNonWs < len && (line[firstNonWs] == ' ' || line[firstNonWs] == '\t'))
                 firstNonWs++;
@@ -234,7 +281,6 @@ namespace CanvasBoard.App.Markdown.Syntax
 
             if (hasLeadingPipe)
             {
-                // Example: "| a | b |", or "  | a | b |"
                 for (int i = 0; i < bars.Count - 1; i++)
                 {
                     int start = bars[i] + 1;
@@ -244,7 +290,6 @@ namespace CanvasBoard.App.Markdown.Syntax
                         segments.Add(new CellSegment(start, end));
                 }
 
-                // Trailing segment if there is content after the last '|'
                 int lastBar = bars[bars.Count - 1];
                 if (lastBar < len - 1)
                 {
@@ -253,11 +298,8 @@ namespace CanvasBoard.App.Markdown.Syntax
             }
             else
             {
-                // Example: "a | b | c" (no leading pipe)
-                // First segment: from start to first pipe
                 segments.Add(new CellSegment(0, bars[0]));
 
-                // Middle segments: between pipes
                 for (int i = 0; i < bars.Count - 1; i++)
                 {
                     int start = bars[i] + 1;
@@ -267,7 +309,6 @@ namespace CanvasBoard.App.Markdown.Syntax
                         segments.Add(new CellSegment(start, end));
                 }
 
-                // Trailing segment if there is content after last pipe
                 int lastBar = bars[bars.Count - 1];
                 if (lastBar < len - 1)
                 {
@@ -276,6 +317,50 @@ namespace CanvasBoard.App.Markdown.Syntax
             }
 
             return segments;
+        }
+
+        private static bool TryParseAtxHeading(string line, out int level)
+        {
+            level = 0;
+            if (string.IsNullOrEmpty(line))
+                return false;
+
+            int i = 0;
+            while (i < line.Length && line[i] == '#')
+                i++;
+
+            if (i == 0 || i > 6)
+                return false;
+
+            // Must be followed by space or end-of-line to be a heading
+            if (i < line.Length && !char.IsWhiteSpace(line[i]))
+                return false;
+
+            level = i;
+            return true;
+        }
+
+        private static bool IsHorizontalRuleLine(string rawLine)
+        {
+            if (string.IsNullOrWhiteSpace(rawLine))
+                return false;
+
+            var trimmed = rawLine.Trim();
+
+            if (trimmed.Length < 3)
+                return false;
+
+            char c = trimmed[0];
+            if (c != '-' && c != '*' && c != '_')
+                return false;
+
+            for (int i = 1; i < trimmed.Length; i++)
+            {
+                if (trimmed[i] != c)
+                    return false;
+            }
+
+            return true;
         }
     }
 }

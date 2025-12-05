@@ -6,6 +6,8 @@ using Avalonia.Media;
 using CanvasBoard.App.Markdown.Document;
 using CanvasBoard.App.Markdown.Tables;
 using CanvasBoard.App.Markdown.Model;
+using System.Linq;
+
 
 namespace CanvasBoard.App.Views.Board
 {
@@ -21,44 +23,64 @@ namespace CanvasBoard.App.Views.Board
             var rect = new Rect(0, 0, Bounds.Width, Bounds.Height);
             context.FillRectangle(_backgroundBrush, rect);
 
-            double lineHeight = LineHeight;
+            double baseLineHeight = LineHeight;
+            double y = 0.0;
 
             for (int i = 0; i < _visualLines.Count; i++)
             {
                 var vis = _visualLines[i];
-                double y = i * lineHeight;
-
-                // Selection background
-                DrawSelectionForVisualLine(context, vis, y, lineHeight);
-
                 int lineIndex = vis.DocLineIndex;
                 bool isCaretLine = (lineIndex == Document.CaretLine);
 
-                // NEW: table-aware rendering for non-caret lines
-                var tableBlock = FindTableBlockForLine(lineIndex);
-                if (!isCaretLine && tableBlock != null)
-                {
-                    // Draw each table line once, on its first visual segment
-                    if (vis.IsFirstSegmentOfLogicalLine)
-                    {
-                        DrawTableRowFromModel(context, tableBlock, lineIndex, y);
-                    }
+                // RESET per iteration
+                double lineHeight = baseLineHeight;
 
-                    // Skip normal segment drawing for this visual line
-                    continue;
+                if (!isCaretLine)
+                {
+                    int level = GetHeadingLevelForLine(lineIndex);
+                    if (level > 0 && level < HeadingLineHeightFactors.Length)
+                    {
+                        lineHeight = baseLineHeight * HeadingLineHeightFactors[level];
+                    }
                 }
+
+                DrawSelectionForVisualLine(context, vis, y, lineHeight);
 
                 string rawLine = Document.Lines[lineIndex] ?? string.Empty;
 
-                // Draw this segment (styled or plain depending on caret line)
-                DrawSegment(context, rawLine, vis, y);
+                var tableBlock = FindTableBlockForLine(lineIndex);
+                if (!isCaretLine && tableBlock != null)
+                {
+                    if (vis.IsFirstSegmentOfLogicalLine)
+                        DrawTableRowFromModel(context, tableBlock, lineIndex, y, lineHeight);
+
+                    y += lineHeight;
+                    continue;
+                }
+
+                if (!isCaretLine && IsHorizontalRuleLine(rawLine))
+                {
+                    if (vis.IsFirstSegmentOfLogicalLine)
+                        DrawHorizontalRule(context, y, lineHeight);
+
+                    y += lineHeight;
+                    continue;
+                }
+
+                DrawSegment(context, rawLine, vis, y, lineHeight);
+                y += lineHeight;
             }
 
             if (IsFocused)
-                DrawCaret(context, lineHeight);
+                DrawCaret(context, baseLineHeight);
         }
 
-        private void DrawSegment(DrawingContext context, string rawLine, VisualLine vis, double y)
+        private void DrawSegment(
+            DrawingContext context,
+            string rawLine,
+            VisualLine vis,
+            double y,
+            double lineHeight)
         {
             // Caret line: raw/plain rendering, no inline styling
             if (vis.DocLineIndex == Document.CaretLine)
@@ -93,9 +115,55 @@ namespace CanvasBoard.App.Views.Board
                 return;
             }
 
-            // Non-caret lines: use inline styling
+            // ---------- Non-caret lines ----------
+
             var lineKind = GetLineKind(vis.DocLineIndex);
+            string lineText = rawLine ?? string.Empty;
+
+            // Heading info
+            int headingLevel = GetHeadingLevelForLine(vis.DocLineIndex);
+            bool isHeading = headingLevel > 0;
+
+            if (isHeading)
+            {
+                // Only draw on the first visual segment
+                if (!vis.IsFirstSegmentOfLogicalLine)
+                    return;
+
+                // Skip leading '#' and whitespace
+                int i = 0;
+                int len = lineText.Length;
+                while (i < len && lineText[i] == '#')
+                    i++;
+                while (i < len && char.IsWhiteSpace(lineText[i]))
+                    i++;
+
+                string headingText = (i < len) ? lineText.Substring(i) : string.Empty;
+                headingText = headingText.Replace("\t", new string(' ', TabSize));
+
+                // Bigger font for headings
+                double fontSize = BaseFontSize;
+                if (headingLevel > 0 && headingLevel < HeadingFontSizeOffsets.Length)
+                    fontSize = BaseFontSize + HeadingFontSizeOffsets[headingLevel];
+
+                // Vertical offset within this line's height to create more space
+                double yOffset = y + lineHeight * 0.15;
+
+                var ftHeading = new FormattedText(
+                    headingText,
+                    CultureInfo.CurrentCulture,
+                    FlowDirection.LeftToRight,
+                    GetTypefaceForLineKind(lineKind),
+                    fontSize,
+                    GetBrushForLineKind(lineKind));
+
+                context.DrawText(ftHeading, new Point(LeftPadding, yOffset));
+                return;
+            }
+
+            // Non-heading lines: inline styling as before
             var inlineRuns = GetInlineRunsForLine(vis.DocLineIndex);
+            double baseFontSize = BaseFontSize;
 
             if (inlineRuns == null || inlineRuns.Count == 0)
             {
@@ -123,31 +191,27 @@ namespace CanvasBoard.App.Views.Board
                     CultureInfo.CurrentCulture,
                     FlowDirection.LeftToRight,
                     GetTypefaceForLineKind(lineKind),
-                    BaseFontSize,
+                    baseFontSize,
                     GetBrushForLineKind(lineKind));
 
                 context.DrawText(ft, new Point(LeftPadding, y));
                 return;
             }
 
-            string lineText = rawLine ?? string.Empty;
             double cw = GetCharWidth();
             int segStart = vis.StartColumn;
             int segEnd = segStart + vis.Length;
 
             if (segStart < 0) segStart = 0;
             if (segEnd > lineText.Length) segEnd = lineText.Length;
-
             if (segEnd <= segStart)
                 return;
 
-            // Iterate through inline runs that intersect this visual segment
             foreach (var r in inlineRuns)
             {
                 int runStart = r.StartColumn;
                 int runEnd = runStart + r.Length;
 
-                // Intersection with segment
                 int partStart = System.Math.Max(segStart, runStart);
                 int partEnd = System.Math.Min(segEnd, runEnd);
 
@@ -161,7 +225,6 @@ namespace CanvasBoard.App.Views.Board
                 string rawSlice = lineText.Substring(partStart, lengthChars);
                 string displaySlice = rawSlice.Replace("\t", new string(' ', TabSize));
 
-                // Visual columns from segment start to this piece start
                 int colsBefore = ComputeColumns(lineText, segStart, partStart - segStart);
                 double x = LeftPadding + colsBefore * cw;
 
@@ -172,7 +235,7 @@ namespace CanvasBoard.App.Views.Board
                     CultureInfo.CurrentCulture,
                     FlowDirection.LeftToRight,
                     typeface,
-                    BaseFontSize,
+                    baseFontSize,
                     brush);
 
                 context.DrawText(ft, new Point(x, y));
@@ -255,20 +318,20 @@ namespace CanvasBoard.App.Views.Board
             context.FillRectangle(_selectionBrush, r);
         }
 
-        private void DrawCaret(DrawingContext context, double lineHeight)
+        private void DrawCaret(DrawingContext context, double baseLineHeight)
         {
             int caretLine = Document.CaretLine;
             int caretCol = Document.CaretColumn;
 
-            if (caretLine < 0 || caretLine >= Document.Lines.Count)
+            if (caretLine < 0 || caretLine >= Document.Lines.Count || _visualLines.Count == 0)
                 return;
 
             string lineText = Document.Lines[caretLine] ?? string.Empty;
             caretCol = System.Math.Clamp(caretCol, 0, lineText.Length);
 
-            // Find visual line segment where caret is
-            int visualIndex = 0;
-            VisualLine? caretVisual = null;
+            // 1) Find visual segment containing the caret
+            int caretVisualIndex = -1;
+            VisualLine? caretVis = null;
 
             for (int i = 0; i < _visualLines.Count; i++)
             {
@@ -279,37 +342,50 @@ namespace CanvasBoard.App.Views.Board
                 int start = v.StartColumn;
                 int end = start + v.Length;
 
-                if (caretCol >= start && caretCol <= end)
+                if ((v.Length == 0 && caretCol == 0) ||
+                    (caretCol >= start && caretCol <= end))
                 {
-                    caretVisual = v;
-                    visualIndex = i;
-                    break;
-                }
-
-                // Handle empty line
-                if (v.Length == 0 && caretCol == 0)
-                {
-                    caretVisual = v;
-                    visualIndex = i;
+                    caretVisualIndex = i;
+                    caretVis = v;
                     break;
                 }
             }
 
-            if (caretVisual == null)
+            if (caretVis == null)
                 return;
 
+            // 2) Accumulate Y using same heading-aware heights as Render
+            double y = 0.0;
+            for (int i = 0; i < caretVisualIndex; i++)
+            {
+                var vis = _visualLines[i];
+                int lineIndex = vis.DocLineIndex;
+
+                double lineHeight = baseLineHeight;
+                int level = GetHeadingLevelForLine(lineIndex);
+                if (level > 0 && level < HeadingLineHeightFactors.Length)
+                {
+                    lineHeight = baseLineHeight * HeadingLineHeightFactors[level];
+                }
+
+                y += lineHeight;
+            }
+
+            // 3) Compute X within this segment (tabs-aware)
             double cw = GetCharWidth();
+            int localStart = caretVis.StartColumn;
+            int clampedCol = caretCol;
+            if (clampedCol < localStart) clampedCol = localStart;
+            if (clampedCol > localStart + caretVis.Length) clampedCol = localStart + caretVis.Length;
 
-            // Visual columns from start of this segment to caret
-            int colsFromSegStart = ComputeColumns(lineText, caretVisual.StartColumn, caretCol - caretVisual.StartColumn);
-
+            int colsFromSegStart = ComputeColumns(lineText, localStart, clampedCol - localStart);
             double x = LeftPadding + colsFromSegStart * cw;
-            double yTop = visualIndex * lineHeight;
-            double yBottom = yTop + lineHeight;
 
-            var caretPen = new Pen(Brushes.White, 1);
-            context.DrawLine(caretPen, new Point(x, yTop), new Point(x, yBottom));
+            // 4) Draw caret with base height
+            var caretRect = new Rect(x, y, 1.0, baseLineHeight);
+            context.FillRectangle(_foregroundBrush, caretRect);
         }
+
 
         // ----------------------------
         // Table rendering
@@ -436,7 +512,8 @@ namespace CanvasBoard.App.Views.Board
             DrawingContext context,
             TableBlock tableBlock,
             int docLineIndex,
-            double y)
+            double y,
+            double lineHeight)
         {
             var table = tableBlock.Table;
             int colCount = table.ColumnCount;
@@ -555,6 +632,71 @@ namespace CanvasBoard.App.Views.Board
                 TableAlignment.Center => new string(' ', padding / 2) + text + new string(' ', padding - padding / 2),
                 _                     => text + new string(' ', padding),
             };
+        }
+
+
+        // ----------------------------
+        // Horizontal rule rendering
+        // ----------------------------
+
+        private static bool IsHorizontalRuleLine(string rawLine)
+        {
+            if (string.IsNullOrWhiteSpace(rawLine))
+                return false;
+
+            var trimmed = rawLine.Trim();
+
+            if (trimmed.Length < 3)
+                return false;
+
+            // HR patterns: --- *** ___ (3 or more repeated)
+            char c = trimmed[0];
+            if (c != '-' && c != '*' && c != '_')
+                return false;
+
+            // All chars must be the same symbol
+            if (!trimmed.All(ch => ch == c))
+                return false;
+
+            return true;
+        }
+
+        private void DrawHorizontalRule(DrawingContext context, double y, double lineHeight)
+        {
+            // Draw a single thin line across, centered in the line's vertical space
+            double margin = 8.0;
+            double centerY = y + lineHeight / 2.0;
+
+            var pen = new Pen(_foregroundBrush, 1.0);
+
+            context.DrawLine(
+                pen,
+                new Point(margin, centerY),
+                new Point(Bounds.Width - margin, centerY));
+        }    
+
+        // ----------------------------
+        // Heading lookup
+        // ----------------------------
+
+        private int GetHeadingLevelForLine(int lineIndex)
+        {
+            if (_model == null)
+                return 0;
+
+            foreach (var block in _model.Blocks)
+            {
+                if (block.Kind != MarkdownBlockKind.Heading)
+                    continue;
+
+                if (lineIndex >= block.StartLine && lineIndex <= block.EndLine)
+                {
+                    var hb = (HeadingBlock)block;
+                    return hb.Level;
+                }
+            }
+
+            return 0;
         }
     }
 }

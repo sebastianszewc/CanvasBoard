@@ -66,4 +66,21 @@ namespace CanvasBoard.App.Markdown.Model
             }
         }
     }
+    /// <summary>
+    /// ATX-style heading, e.g. "# H1", "## H2", up to "###### H6".
+    /// </summary>
+    public sealed class HeadingBlock : MarkdownBlock
+    {
+        public int Level { get; }
+
+        public HeadingBlock(
+            TextSpan span,
+            int startLine,
+            int endLine,
+            int level)
+            : base(MarkdownBlockKind.Heading, span, startLine, endLine)
+        {
+            Level = Math.Clamp(level, 1, 6);
+        }
+    }
 }
