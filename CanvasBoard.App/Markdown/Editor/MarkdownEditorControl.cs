@@ -24,6 +24,7 @@ namespace CanvasBoard.App.Views.Board
 
                 _text = v;
                 Document.SetText(_text);
+                ResetUndoHistory();
                 InvalidateVisual();
             }
         }

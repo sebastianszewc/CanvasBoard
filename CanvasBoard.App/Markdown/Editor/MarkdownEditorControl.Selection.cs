@@ -59,6 +59,10 @@ namespace CanvasBoard.App.Views.Board
             return true;
         }
 
+        /// <summary>
+        /// Delete current selection in the document if any. Does not
+        /// push undo or update _text; those are handled by operations.
+        /// </summary>
         private bool DeleteSelectionIfAny()
         {
             if (!TryGetSelectionSpan(out var span))
@@ -67,12 +71,12 @@ namespace CanvasBoard.App.Views.Board
             Document.DeleteSpan(span);
             Document.SetCaret(span.StartLine, span.StartColumn);
             ClearSelection();
-            _text = Document.GetText();
             return true;
         }
 
         // --------------------
         // Indent / Outdent with real tabs
+        // (used by Tab handling -> wrapped in SnapshotOperation)
         // --------------------
 
         private void IndentLines(int fromLine, int toLine)

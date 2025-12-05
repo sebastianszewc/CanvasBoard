@@ -28,7 +28,8 @@ namespace CanvasBoard.App.Markdown.Document
             }
             else
             {
-                var split = text.Replace("\r\n", "\n").Split('\n');
+                var normalized = text.Replace("\r\n", "\n");
+                var split = normalized.Split('\n');
                 Lines.AddRange(split);
             }
 
@@ -38,6 +39,7 @@ namespace CanvasBoard.App.Markdown.Document
 
         public string GetText()
         {
+            // Use Environment.NewLine for external representation
             return string.Join(Environment.NewLine, Lines);
         }
 
@@ -362,6 +364,47 @@ namespace CanvasBoard.App.Markdown.Document
             {
                 Lines.RemoveAt(i);
             }
+        }
+
+        /// <summary>
+        /// Replace the text in the given span with newText and return the old text.
+        /// Also returns the resulting span of the inserted text.
+        /// </summary>
+        public string ReplaceRange(LineSpan span, string newText, out LineSpan resultingRange)
+        {
+            int sl = span.StartLine;
+            int sc = span.StartColumn;
+            int el = span.EndLine;
+            int ec = span.EndColumn;
+
+            sl = Math.Clamp(sl, 0, Lines.Count - 1);
+            el = Math.Clamp(el, 0, Lines.Count - 1);
+
+            if (sl > el || (sl == el && sc > ec))
+            {
+                (sl, el) = (el, sl);
+                (sc, ec) = (ec, sc);
+            }
+
+            var normalized = new LineSpan(sl, sc, el, ec);
+
+            string oldText = GetText(normalized);
+
+            DeleteSpan(normalized);
+            SetCaret(normalized.StartLine, normalized.StartColumn);
+
+            if (!string.IsNullOrEmpty(newText))
+            {
+                InsertTextWithNewlines(newText);
+            }
+
+            resultingRange = new LineSpan(
+                normalized.StartLine,
+                normalized.StartColumn,
+                CaretLine,
+                CaretColumn);
+
+            return oldText;
         }
     }
 }

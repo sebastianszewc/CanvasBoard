@@ -14,11 +14,30 @@ namespace CanvasBoard.App.Views.Board
             if (string.IsNullOrEmpty(e.Text))
                 return;
 
-            // Typing replaces current selection if any
-            DeleteSelectionIfAny();
+            // Regular typing: Replace selection (if any) with e.Text
+            LineSpan range;
+            if (TryGetSelectionSpan(out var selSpan))
+            {
+                range = selSpan;
+            }
+            else
+            {
+                range = new LineSpan(
+                    Document.CaretLine,
+                    Document.CaretColumn,
+                    Document.CaretLine,
+                    Document.CaretColumn);
+            }
 
-            Document.InsertText(e.Text);
-            _text = Document.GetText();
+            var op = ReplaceRangeOperation.CreateAndApply(
+                Document,
+                this,
+                range,
+                e.Text,
+                clearSelectionAfter: true);
+
+            PushOperation(op, allowMerge: true);
+
             InvalidateVisual();
             e.Handled = true;
         }
@@ -30,11 +49,24 @@ namespace CanvasBoard.App.Views.Board
             bool ctrl = (e.KeyModifiers & KeyModifiers.Control) != 0;
             bool shift = (e.KeyModifiers & KeyModifiers.Shift) != 0;
 
-            // --- Ctrl shortcuts: cut/copy/paste/select-all ---
+            // --- Ctrl shortcuts: undo/redo/cut/copy/paste/select-all ---
             if (ctrl)
             {
                 switch (e.Key)
                 {
+                    case Key.Z:
+                        if (shift)
+                            Redo();
+                        else
+                            Undo();
+                        e.Handled = true;
+                        return;
+
+                    case Key.Y:
+                        Redo();
+                        e.Handled = true;
+                        return;
+
                     case Key.C:
                         CopySelectionOrAllToClipboardAsync();
                         e.Handled = true;
@@ -174,37 +206,160 @@ namespace CanvasBoard.App.Views.Board
                     break;
 
                 case Key.Enter:
-                    // Enter replaces selection if any
-                    if (!DeleteSelectionIfAny())
+                {
+                    // Replace selection (if any) with newline
+                    LineSpan range;
+                    if (TryGetSelectionSpan(out var selSpan))
                     {
-                        // no selection
+                        range = selSpan;
                     }
-                    Document.InsertNewLine();
+                    else
+                    {
+                        range = new LineSpan(
+                            Document.CaretLine,
+                            Document.CaretColumn,
+                            Document.CaretLine,
+                            Document.CaretColumn);
+                    }
+
+                    var op = ReplaceRangeOperation.CreateAndApply(
+                        Document,
+                        this,
+                        range,
+                        "\n",
+                        clearSelectionAfter: true);
+
+                    PushOperation(op, allowMerge: false);
                     break;
+                }
 
                 case Key.Back:
-                    if (!DeleteSelectionIfAny())
-                        Document.Backspace();
+                {
+                    // If selection -> delete selection; else delete char before caret (including newline)
+                    if (TryGetSelectionSpan(out var selSpan))
+                    {
+                        var op = ReplaceRangeOperation.CreateAndApply(
+                            Document,
+                            this,
+                            selSpan,
+                            string.Empty,
+                            clearSelectionAfter: true);
+
+                        PushOperation(op, allowMerge: false);
+                    }
+                    else
+                    {
+                        int line = Document.CaretLine;
+                        int col = Document.CaretColumn;
+
+                        if (line == 0 && col == 0)
+                            break; // nothing to delete
+
+                        int startLine, startCol, endLine, endCol;
+
+                        if (col > 0)
+                        {
+                            startLine = line;
+                            startCol = col - 1;
+                            endLine = line;
+                            endCol = col;
+                        }
+                        else
+                        {
+                            // At column 0, delete the "newline" joining previous line
+                            startLine = line - 1;
+                            startCol = (Document.Lines[startLine] ?? string.Empty).Length;
+                            endLine = line;
+                            endCol = 0;
+                        }
+
+                        var range = new LineSpan(startLine, startCol, endLine, endCol);
+
+                        var op = ReplaceRangeOperation.CreateAndApply(
+                            Document,
+                            this,
+                            range,
+                            string.Empty,
+                            clearSelectionAfter: true);
+
+                        PushOperation(op, allowMerge: false);
+                    }
                     break;
+                }
 
                 case Key.Delete:
-                    if (!DeleteSelectionIfAny())
-                        Document.Delete();
+                {
+                    // If selection -> delete selection; else delete char after caret (including newline)
+                    if (TryGetSelectionSpan(out var selSpan))
+                    {
+                        var op = ReplaceRangeOperation.CreateAndApply(
+                            Document,
+                            this,
+                            selSpan,
+                            string.Empty,
+                            clearSelectionAfter: true);
+
+                        PushOperation(op, allowMerge: false);
+                    }
+                    else
+                    {
+                        int line = Document.CaretLine;
+                        int col = Document.CaretColumn;
+                        string lineText = Document.Lines[line] ?? string.Empty;
+
+                        int startLine = line, startCol = col, endLine = line, endCol = col;
+
+                        if (col < lineText.Length)
+                        {
+                            // Delete character inside the line
+                            startLine = line;
+                            startCol = col;
+                            endLine = line;
+                            endCol = col + 1;
+                        }
+                        else if (line + 1 < Document.Lines.Count)
+                        {
+                            // Delete the "newline" joining this and next line
+                            startLine = line;
+                            startCol = col;
+                            endLine = line + 1;
+                            endCol = 0;
+                        }
+                        else
+                        {
+                            break; // nothing to delete
+                        }
+
+                        var range = new LineSpan(startLine, startCol, endLine, endCol);
+
+                        var op = ReplaceRangeOperation.CreateAndApply(
+                            Document,
+                            this,
+                            range,
+                            string.Empty,
+                            clearSelectionAfter: true);
+
+                        PushOperation(op, allowMerge: false);
+                    }
                     break;
+                }
 
                 case Key.Tab:
                 {
-                    // Proper tab: indent/outdent current line or all selected lines using real '\t'
+                    // Indent/outdent current line or all selected lines; treat as one snapshot op.
                     int firstLine, lastLine;
-                    if (TryGetSelectionSpan(out var span))
+                    if (TryGetSelectionSpan(out var selSpan))
                     {
-                        firstLine = span.StartLine;
-                        lastLine = span.EndLine;
+                        firstLine = selSpan.StartLine;
+                        lastLine = selSpan.EndLine;
                     }
                     else
                     {
                         firstLine = lastLine = Document.CaretLine;
                     }
+
+                    var beforeSel = CaptureSelectionState();
+                    var beforeText = Document.GetText();
 
                     if (shift)
                         OutdentLines(firstLine, lastLine);
@@ -212,6 +367,12 @@ namespace CanvasBoard.App.Views.Board
                         IndentLines(firstLine, lastLine);
 
                     _text = Document.GetText();
+                    var afterSel = CaptureSelectionState();
+                    var afterText = _text;
+
+                    var op = new SnapshotOperation(beforeText, afterText, beforeSel, afterSel);
+                    PushOperation(op, allowMerge: false);
+
                     InvalidateVisual();
                     e.Handled = true;
                     return;
@@ -513,24 +674,35 @@ namespace CanvasBoard.App.Views.Board
                 return;
 
             string text;
+            LineSpan range;
+
             if (TryGetSelectionSpan(out var span))
+            {
+                range = span;
                 text = Document.GetText(span);
+            }
             else
-                text = _text ?? string.Empty;
+            {
+                // Cut entire document
+                if (Document.Lines.Count == 0)
+                    return;
+
+                int lastLine = Document.Lines.Count - 1;
+                int lastCol = Document.Lines[lastLine]?.Length ?? 0;
+                range = new LineSpan(0, 0, lastLine, lastCol);
+                text = Document.GetText();
+            }
 
             await top.Clipboard.SetTextAsync(text);
 
-            if (TryGetSelectionSpan(out var span2))
-            {
-                Document.DeleteSpan(span2);
-                Document.SetCaret(span2.StartLine, span2.StartColumn);
-                ClearSelection();
-            }
-            else
-            {
-                Document.SetText(string.Empty);
-                ClearSelection();
-            }
+            var op = ReplaceRangeOperation.CreateAndApply(
+                Document,
+                this,
+                range,
+                string.Empty,
+                clearSelectionAfter: true);
+
+            PushOperation(op, allowMerge: false);
 
             _text = Document.GetText();
             InvalidateVisual();
@@ -546,10 +718,29 @@ namespace CanvasBoard.App.Views.Board
             if (string.IsNullOrEmpty(text))
                 return;
 
-            // Replace selection if any
-            DeleteSelectionIfAny();
+            LineSpan range;
+            if (TryGetSelectionSpan(out var span))
+            {
+                range = span;
+            }
+            else
+            {
+                range = new LineSpan(
+                    Document.CaretLine,
+                    Document.CaretColumn,
+                    Document.CaretLine,
+                    Document.CaretColumn);
+            }
 
-            Document.InsertTextWithNewlines(text);
+            var op = ReplaceRangeOperation.CreateAndApply(
+                Document,
+                this,
+                range,
+                text,
+                clearSelectionAfter: true);
+
+            PushOperation(op, allowMerge: false);
+
             _text = Document.GetText();
             InvalidateVisual();
         }
