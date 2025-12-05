@@ -1,3 +1,4 @@
+using System;               
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -88,9 +89,24 @@ namespace CanvasBoard.App.Views.Board
                         InvalidateVisual();
                         e.Handled = true;
                         return;
+
+                    // NEW: inline formatting
+                    case Key.B:
+                        ToggleInlineMarkup("**");   // bold
+                        e.Handled = true;
+                        return;
+
+                    case Key.I:
+                        ToggleInlineMarkup("_");    // italic
+                        e.Handled = true;
+                        return;
+
+                    case Key.E:
+                        ToggleInlineMarkup("`");    // code span
+                        e.Handled = true;
+                        return;
                 }
             }
-
             bool handled = true;
 
             switch (e.Key)
@@ -207,30 +223,27 @@ namespace CanvasBoard.App.Views.Board
 
                 case Key.Enter:
                 {
-                    // Replace selection (if any) with newline
-                    LineSpan range;
+                    // If there is a selection, keep behavior simple for now:
+                    // just replace selection with a newline (no list/quote magic).
                     if (TryGetSelectionSpan(out var selSpan))
                     {
-                        range = selSpan;
-                    }
-                    else
-                    {
-                        range = new LineSpan(
-                            Document.CaretLine,
-                            Document.CaretColumn,
-                            Document.CaretLine,
-                            Document.CaretColumn);
+                        var op = ReplaceRangeOperation.CreateAndApply(
+                            Document,
+                            this,
+                            selSpan,
+                            "\n",
+                            clearSelectionAfter: true);
+
+                        PushOperation(op, allowMerge: false);
+                        _text = Document.GetText();
+                        InvalidateVisual();
+                        e.Handled = true;
+                        return;
                     }
 
-                    var op = ReplaceRangeOperation.CreateAndApply(
-                        Document,
-                        this,
-                        range,
-                        "\n",
-                        clearSelectionAfter: true);
-
-                    PushOperation(op, allowMerge: false);
-                    break;
+                    HandleSmartEnter();
+                    e.Handled = true;
+                    return;
                 }
 
                 case Key.Back:
@@ -751,6 +764,210 @@ namespace CanvasBoard.App.Views.Board
 
             _text = Document.GetText();
             InvalidateVisual();
+        }
+    
+        // Toggle wrapping of the current selection with a simple inline markdown marker.
+        // Examples:
+        //   marker="**"  -> **text**
+        //   marker="_"   -> _text_
+        //   marker="`"   -> `text`
+        private void ToggleInlineMarkup(string marker)
+        {
+            if (string.IsNullOrEmpty(marker))
+                return;
+
+            if (!TryGetSelectionSpan(out var span))
+                return; // no selection -> do nothing for now
+
+            string selected = Document.GetText(span) ?? string.Empty;
+
+            string newText;
+
+            // Simple unwrap: marker...marker
+            if (selected.Length >= marker.Length * 2 &&
+                selected.StartsWith(marker, StringComparison.Ordinal) &&
+                selected.EndsWith(marker, StringComparison.Ordinal))
+            {
+                newText = selected.Substring(
+                    marker.Length,
+                    selected.Length - marker.Length * 2);
+            }
+            else
+            {
+                newText = marker + selected + marker;
+            }
+
+            var op = ReplaceRangeOperation.CreateAndApply(
+                Document,
+                this,
+                span,
+                newText,
+                clearSelectionAfter: true);
+
+            PushOperation(op, allowMerge: false);
+
+            _text = Document.GetText();
+            InvalidateVisual();
+        }
+        private void HandleSmartEnter()
+        {
+            int lineIndex = Document.CaretLine;
+            int caretCol = Document.CaretColumn;
+
+            if (lineIndex < 0 || lineIndex >= Document.Lines.Count)
+                return;
+
+            string line = Document.Lines[lineIndex] ?? string.Empty;
+            int lineLen = line.Length;
+
+            // Basic fallback: if line is empty, just insert a newline
+            if (lineLen == 0)
+            {
+                var spanEmpty = new LineSpan(lineIndex, caretCol, lineIndex, caretCol);
+                var opEmpty = ReplaceRangeOperation.CreateAndApply(
+                    Document,
+                    this,
+                    spanEmpty,
+                    "\n",
+                    clearSelectionAfter: true);
+
+                PushOperation(opEmpty, allowMerge: false);
+                _text = Document.GetText();
+                InvalidateVisual();
+                return;
+            }
+
+            // 1) Leading whitespace (indent)
+            int indentEnd = 0;
+            while (indentEnd < lineLen && (line[indentEnd] == ' ' || line[indentEnd] == '\t'))
+                indentEnd++;
+
+            // 2) Optional block quote: one or more '>' with optional spaces, e.g.
+            //    "> ", ">> ", "> > ", ">>>"
+            int pos = indentEnd;
+            bool hasQuote = false;
+
+            while (pos < lineLen && line[pos] == '>')
+            {
+                hasQuote = true;
+                pos++;
+
+                // Allow a single space after each '>' ("> > > text" or ">>> text")
+                if (pos < lineLen && line[pos] == ' ')
+                    pos++;
+            }
+
+            int afterQuotePos = pos;
+
+
+            // 3) Optional bullet or ordered list marker
+            bool hasBullet = false;
+            bool hasOrdered = false;
+
+            if (pos < lineLen && (line[pos] == '-' || line[pos] == '*' || line[pos] == '+'))
+            {
+                hasBullet = true;
+                pos++;
+                if (pos < lineLen && line[pos] == ' ')
+                    pos++;
+            }
+            else
+            {
+                int digitsStart = pos;
+                while (pos < lineLen && char.IsDigit(line[pos]))
+                    pos++;
+
+                if (pos > digitsStart && pos < lineLen && line[pos] == '.')
+                {
+                    hasOrdered = true;
+                    pos++;
+                    if (pos < lineLen && line[pos] == ' ')
+                        pos++;
+                }
+                else
+                {
+                    // No valid ordered list; reset to after quote
+                    pos = afterQuotePos;
+                }
+            }
+
+            int prefixEnd = pos;
+            string newLinePrefix = line.Substring(0, prefixEnd);
+            string contentAfterPrefix = prefixEnd <= lineLen ? line.Substring(prefixEnd) : string.Empty;
+
+            bool hasStructure = hasQuote || hasBullet || hasOrdered;
+            bool onlyWhitespaceAfterPrefix = contentAfterPrefix.Trim().Length == 0;
+
+            // Helper: plain newline (no markdown-aware behavior)
+            void PlainNewLine()
+            {
+                string afterCaret = caretCol <= lineLen ? line.Substring(caretCol) : string.Empty;
+
+                var span = new LineSpan(lineIndex, caretCol, lineIndex, lineLen);
+                var op = ReplaceRangeOperation.CreateAndApply(
+                    Document,
+                    this,
+                    span,
+                    "\n" + afterCaret,
+                    clearSelectionAfter: true);
+
+                PushOperation(op, allowMerge: false);
+                _text = Document.GetText();
+                InvalidateVisual();
+            }
+
+            if (!hasStructure)
+            {
+                PlainNewLine();
+                return;
+            }
+
+            // If caret is inside the marker/prefix region, don't try anything clever
+            if (caretCol < prefixEnd)
+            {
+                PlainNewLine();
+                return;
+            }
+
+            // Exit list/quote: line contains only marker + optional whitespace, caret at end
+            if (onlyWhitespaceAfterPrefix && caretCol >= lineLen)
+            {
+                string indent = line.Substring(0, indentEnd);
+
+                // Replace from indentEnd to end-of-line with "\n" + indent,
+                // effectively removing bullet/number/quote and creating a blank indented line.
+                var span = new LineSpan(lineIndex, indentEnd, lineIndex, lineLen);
+                var op = ReplaceRangeOperation.CreateAndApply(
+                    Document,
+                    this,
+                    span,
+                    "\n" + indent,
+                    clearSelectionAfter: true);
+
+                PushOperation(op, allowMerge: false);
+                _text = Document.GetText();
+                InvalidateVisual();
+                return;
+            }
+
+            // Continue list/quote: replicate prefix on the new line
+            {
+                string afterCaret = caretCol <= lineLen ? line.Substring(caretCol) : string.Empty;
+                string insertText = "\n" + newLinePrefix + afterCaret;
+
+                // Replace from caret to end-of-line with "\n" + prefix + rest-of-line-after-caret
+                var span = new LineSpan(lineIndex, caretCol, lineIndex, lineLen);
+                var op = ReplaceRangeOperation.CreateAndApply(
+                    Document,
+                    this,
+                    span,
+                    insertText,
+                    clearSelectionAfter: true);
+
+                PushOperation(op, allowMerge: false);
+                _text = Document.GetText();
+                InvalidateVisual();
+            }
         }
     }
 }
