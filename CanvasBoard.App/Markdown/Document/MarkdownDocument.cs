@@ -411,6 +411,61 @@ namespace CanvasBoard.App.Markdown.Document
             // Clamp defensively if you want, or just assign.
             CaretLine = line;
             CaretColumn = column;
+        }    
+        public int GetOffset(int line, int column)
+        {
+            if (Lines.Count == 0)
+                return 0;
+
+            line = Math.Clamp(line, 0, Lines.Count - 1);
+            var lineText = Lines[line] ?? string.Empty;
+            column = Math.Clamp(column, 0, lineText.Length);
+
+            int offset = 0;
+
+            for (int i = 0; i < line; i++)
+            {
+                var lt = Lines[i] ?? string.Empty;
+                offset += lt.Length;
+                // newline separator between lines
+                offset += 1;
+            }
+
+            offset += column;
+            return offset;
         }
+        public (int line, int column) GetLineColumn(int offset)
+        {
+            if (Lines.Count == 0)
+                return (0, 0);
+
+            if (offset <= 0)
+                return (0, 0);
+
+            int total = 0;
+
+            for (int i = 0; i < Lines.Count; i++)
+            {
+                var lt = Lines[i] ?? string.Empty;
+                int lineLen = lt.Length;
+                int lineStart = total;
+                int lineEnd = lineStart + lineLen; // exclusive
+
+                if (offset <= lineEnd)
+                {
+                    int column = offset - lineStart;
+                    column = Math.Clamp(column, 0, lineLen);
+                    return (i, column);
+                }
+
+                // move past this line and its newline separator
+                total = lineEnd + 1;
+            }
+
+            // Beyond the end: clamp to end of last line
+            int lastIndex = Lines.Count - 1;
+            var lastText = Lines[lastIndex] ?? string.Empty;
+            return (lastIndex, lastText.Length);
+        }    
     }
 }

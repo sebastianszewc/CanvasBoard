@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using CanvasBoard.App.Markdown.Document;
 using System.Collections.Generic;
+using CanvasBoard.App.Markdown.Model;
 
 
 namespace CanvasBoard.App.Views.Board
@@ -1005,10 +1006,16 @@ namespace CanvasBoard.App.Views.Board
             _text = Document.GetText();
         }
 
+        // ----------------------------
+        // Table-aware caret navigation
+        // ----------------------------
+
         private bool TryNavigateTableCell(bool backwards)
         {
-            if (!TryGetCurrentTableCell(out var table, out var rowIndex, out var colIndex))
+            if (!TryGetCurrentTableCell(out TableBlock tableBlock, out int rowIndex, out int colIndex))
                 return false;
+
+            var table = tableBlock.Table;
 
             int lastRow = table.RowCount - 1;
             int lastCol = table.ColumnCount - 1;
@@ -1053,21 +1060,21 @@ namespace CanvasBoard.App.Views.Board
                 }
             }
 
-            MoveCaretToTableCell(table, newRow, newCol);
+            MoveCaretToTableCell(tableBlock, newRow, newCol);
             return true;
         }
 
         private bool TryGetCurrentTableCell(
-            out CanvasBoard.App.Markdown.Tables.TableModel table,
+            out TableBlock tableBlock,
             out int rowIndex,
             out int colIndex)
         {
-            table = null!;
+            tableBlock = null!;
             rowIndex = -1;
             colIndex = -1;
 
-            // Ensure table engine is up to date
-            RebuildTableEngine();
+            // Ensure model is up to date
+            EnsureModel();
 
             int lineIndex = Document.CaretLine;
             int caretCol = Document.CaretColumn;
@@ -1075,118 +1082,85 @@ namespace CanvasBoard.App.Views.Board
             if (lineIndex < 0 || lineIndex >= Document.Lines.Count)
                 return false;
 
-            var t = FindTableForLine(lineIndex);
-            if (t == null)
+            int offset = Document.GetOffset(lineIndex, caretCol);
+
+            var block = FindTableBlockAtOffset(offset);
+            if (block == null)
                 return false;
 
-            // Ignore alignment/separator row for navigation
-            if (lineIndex == t.StartLine + 1)
-                return false;
+            // Find cell whose span contains this offset
+            int rows = block.RowCount;
+            int cols = block.ColumnCount;
 
-            // Map document line to table row index
-            if (lineIndex == t.StartLine)
+            for (int r = 0; r < rows; r++)
             {
-                // Header row
-                rowIndex = 0;
-            }
-            else
-            {
-                // Body rows start at StartLine + 2
-                rowIndex = lineIndex - (t.StartLine + 1);
-            }
-
-            if (rowIndex < 0 || rowIndex >= t.RowCount)
-                return false;
-
-            string line = Document.Lines[lineIndex] ?? string.Empty;
-            caretCol = System.Math.Clamp(caretCol, 0, line.Length);
-
-            var segments = ComputeTableLineSegments(line);
-            if (segments.Count == 0)
-                return false;
-
-            // Determine which segment the caret is in
-            int segIndex = -1;
-
-            for (int i = 0; i < segments.Count; i++)
-            {
-                var seg = segments[i];
-
-                if (caretCol < seg.Start)
+                for (int c = 0; c < cols; c++)
                 {
-                    segIndex = i;
-                    break;
-                }
-
-                if (caretCol <= seg.End)
-                {
-                    segIndex = i;
-                    break;
+                    var span = block.CellSpans[r, c];
+                    if (span.Contains(offset))
+                    {
+                        tableBlock = block;
+                        rowIndex = r;
+                        colIndex = c;
+                        return true;
+                    }
                 }
             }
 
-            if (segIndex == -1)
-                segIndex = segments.Count - 1;
+            // Fallback: if not inside any cell span, find nearest cell by span center
+            int bestR = 0;
+            int bestC = 0;
+            int bestDist = int.MaxValue;
+            bool found = false;
 
-            colIndex = System.Math.Clamp(segIndex, 0, t.ColumnCount - 1);
+            for (int r = 0; r < rows; r++)
+            {
+                for (int c = 0; c < cols; c++)
+                {
+                    var span = block.CellSpans[r, c];
+                    int center = span.Start + span.Length / 2;
+                    int dist = Math.Abs(center - offset);
 
-            table = t;
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        bestR = r;
+                        bestC = c;
+                        found = true;
+                    }
+                }
+            }
+
+            if (!found)
+                return false;
+
+            tableBlock = block;
+            rowIndex = bestR;
+            colIndex = bestC;
             return true;
         }
 
         private void MoveCaretToTableCell(
-            CanvasBoard.App.Markdown.Tables.TableModel table,
+            TableBlock tableBlock,
             int rowIndex,
             int colIndex)
         {
+            var table = tableBlock.Table;
+
             if (table.ColumnCount <= 0 || table.RowCount <= 0)
                 return;
 
-            rowIndex = System.Math.Clamp(rowIndex, 0, table.RowCount - 1);
-            colIndex = System.Math.Clamp(colIndex, 0, table.ColumnCount - 1);
+            rowIndex = Math.Clamp(rowIndex, 0, table.RowCount - 1);
+            colIndex = Math.Clamp(colIndex, 0, table.ColumnCount - 1);
 
-            int docLine;
+            var span = tableBlock.CellSpans[rowIndex, colIndex];
 
-            if (rowIndex == 0)
-            {
-                // Header
-                docLine = table.StartLine;
-            }
-            else
-            {
-                // Body rows
-                docLine = table.StartLine + 1 + rowIndex;
-            }
+            // Move caret to start of cell
+            int targetOffset = span.Start;
 
-            if (docLine < 0 || docLine >= Document.Lines.Count)
-                return;
+            var (line, column) = Document.GetLineColumn(targetOffset);
 
-            string line = Document.Lines[docLine] ?? string.Empty;
-            var segments = ComputeTableLineSegments(line);
-
-            if (segments.Count == 0)
-            {
-                Document.SetCaretPosition(docLine, 0);
-                ClearSelection();
-                InvalidateVisual();
-                return;
-            }
-
-            int segIndex = System.Math.Clamp(colIndex, 0, segments.Count - 1);
-            var seg = segments[segIndex];
-
-            int start = seg.Start;
-            int end = System.Math.Min(seg.End, line.Length);
-
-            // Move to first non-space inside the cell segment
-            int col = start;
-            while (col < end && (line[col] == ' ' || line[col] == '\t' || line[col] == '|'))
-                col++;
-
-            if (col >= end)
-                col = start;
-
-            Document.SetCaretPosition(docLine, System.Math.Clamp(col, 0, line.Length));
+            Document.SetCaretPosition(line, column);
 
             ClearSelection();
             InvalidateVisual();

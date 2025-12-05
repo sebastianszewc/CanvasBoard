@@ -8,9 +8,11 @@ namespace CanvasBoard.App.Views.Board
         {
             EnsureLayout(Bounds.Width);
         }
-
         private void EnsureLayout(double availableWidth)
         {
+            //build block model
+            EnsureModel();
+
             // Recompute markdown block styles first
             EnsureMarkdownStyles();
 

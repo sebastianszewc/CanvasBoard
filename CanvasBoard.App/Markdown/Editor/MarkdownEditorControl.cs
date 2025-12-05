@@ -6,6 +6,8 @@ using Avalonia.Controls;
 using Avalonia.Media;
 using CanvasBoard.App.Markdown.Document;
 using CanvasBoard.App.Markdown.Tables;
+using CanvasBoard.App.Markdown.Model;
+using CanvasBoard.App.Markdown.Syntax;
 
 namespace CanvasBoard.App.Views.Board
 {
@@ -423,5 +425,31 @@ namespace CanvasBoard.App.Views.Board
         {
             return _tableEngine?.FindTableAtLine(lineIndex);
         }
+
+        // High-level parsed model (blocks, including tables)
+        private MarkdownDocumentModel? _model;
+
+        private void EnsureModel()
+        {
+            // For now we just reparse; later you can add dirty flags if needed
+            _model = MarkdownBlockParser.Parse(Document);
+        }        
+        private TableBlock? FindTableBlockAtOffset(int offset)
+        {
+            if (_model == null)
+                return null;
+
+            foreach (var block in _model.Blocks)
+            {
+                if (block.Kind != MarkdownBlockKind.Table)
+                    continue;
+
+                if (block.Span.Contains(offset))
+                    return (TableBlock)block;
+            }
+
+            return null;
+        }
+
     }
 }
