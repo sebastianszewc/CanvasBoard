@@ -1,4 +1,3 @@
-using System;
 using Avalonia;
 
 namespace CanvasBoard.App.Views.Board
@@ -7,13 +6,20 @@ namespace CanvasBoard.App.Views.Board
     {
         private void EnsureLayout()
         {
+            EnsureLayout(Bounds.Width);
+        }
+
+        private void EnsureLayout(double availableWidth)
+        {
+            // Recompute markdown block styles first
+            EnsureMarkdownStyles();
+
             _visualLines.Clear();
 
-            double availableWidth = Bounds.Width;
             if (double.IsNaN(availableWidth) || double.IsInfinity(availableWidth) || availableWidth <= 0)
                 availableWidth = 1000;
 
-            double textWidth = Math.Max(0, availableWidth - LeftPadding * 2);
+            double textWidth = System.Math.Max(0, availableWidth - LeftPadding * 2);
 
             for (int li = 0; li < Document.Lines.Count; li++)
             {
@@ -37,8 +43,7 @@ namespace CanvasBoard.App.Views.Board
 
                 while (startIndex < lineLen)
                 {
-                    // For wrapped segments (not the first), skip leading spaces so
-                    // new visual lines do not start with a space.
+                    // For wrapped segments (not the first), skip leading spaces
                     if (!firstSegment)
                     {
                         while (startIndex < lineLen && rawLine[startIndex] == ' ')
@@ -52,7 +57,7 @@ namespace CanvasBoard.App.Views.Board
 
                     int maxLen = FindMaxFittingLength(rawLine, startIndex, remaining, textWidth);
                     if (maxLen <= 0)
-                        maxLen = Math.Min(remaining, 1);
+                        maxLen = System.Math.Min(remaining, 1);
 
                     _visualLines.Add(new VisualLine
                     {
@@ -84,7 +89,7 @@ namespace CanvasBoard.App.Views.Board
             int bestChars = 0;
             int col = 0;
             int lineLen = line.Length;
-            int endLimit = Math.Min(start + maxLen, lineLen);
+            int endLimit = System.Math.Min(start + maxLen, lineLen);
 
             // Greedily add characters while we have columns left
             for (int idx = start; idx < endLimit; idx++)
@@ -106,7 +111,7 @@ namespace CanvasBoard.App.Views.Board
             }
 
             if (bestChars <= 0)
-                bestChars = Math.Min(maxLen, 1);
+                bestChars = System.Math.Min(maxLen, 1);
 
             // Word-aware backoff: avoid cutting a word if possible
             int globalEndIndex = start + bestChars;
@@ -120,7 +125,7 @@ namespace CanvasBoard.App.Views.Board
             }
 
             if (bestChars <= 0)
-                bestChars = Math.Min(maxLen, 1);
+                bestChars = System.Math.Min(maxLen, 1);
 
             return bestChars;
         }

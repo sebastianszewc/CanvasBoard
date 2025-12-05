@@ -2,11 +2,18 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:CanvasBoard.App.Views.Board"
              x:Class="CanvasBoard.App.Views.Board.NoteView">
+
   <Border Background="#3A3A3A"
           Padding="10"
           CornerRadius="0"
           BorderBrush="#222222"
           BorderThickness="1">
-    <local:MarkdownEditorControl x:Name="Editor" />
+
+    <ScrollViewer
+        HorizontalScrollBarVisibility="Disabled"
+        VerticalScrollBarVisibility="Auto">
+      <local:MarkdownEditorControl x:Name="Editor" />
+    </ScrollViewer>
+
   </Border>
 </UserControl>

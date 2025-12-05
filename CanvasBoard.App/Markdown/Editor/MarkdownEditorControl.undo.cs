@@ -175,11 +175,18 @@ namespace CanvasBoard.App.Views.Board
 
                 // Merge: extend our new text and after span/state
                 _newText += next._newText;
-                _rangeAfter = next._rangeAfter;
+
+                _rangeAfter = new LineSpan(
+                    _rangeBefore.StartLine,
+                    _rangeBefore.StartColumn,
+                    next._rangeAfter.EndLine,
+                    next._rangeAfter.EndColumn);
+
                 _afterSel = next._afterSel;
 
                 return true;
             }
+
         }
 
         /// <summary>

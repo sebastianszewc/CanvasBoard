@@ -29,30 +29,12 @@ namespace CanvasBoard.App.Views.Board
 
                 string rawLine = Document.Lines[vis.DocLineIndex] ?? string.Empty;
 
-                // Always draw just this segment of the line; no special case for caret line
+                // Draw this segment (styled or plain depending on caret line)
                 DrawSegment(context, rawLine, vis, y);
             }
 
             if (IsFocused)
                 DrawCaret(context, lineHeight);
-        }
-
-        private void DrawPlainLine(DrawingContext context, string line, double y)
-        {
-            var typeface = GetTypeface();
-
-            // Render: replace tabs with spaces for drawing (width is handled by ComputeColumns)
-            string display = line.Replace("\t", new string(' ', TabSize));
-
-            var ft = new FormattedText(
-                display,
-                CultureInfo.CurrentCulture,
-                FlowDirection.LeftToRight,
-                typeface,
-                BaseFontSize,
-                _foregroundBrush);
-
-            context.DrawText(ft, new Point(LeftPadding, y));
         }
 
         private void DrawSegment(DrawingContext context, string rawLine, VisualLine vis, double y)
@@ -73,10 +55,13 @@ namespace CanvasBoard.App.Views.Board
                 }
             }
 
-            var typeface = GetTypeface();
-
-            // Tabs rendered as spaces; geometry is still tab-aware via ComputeColumns.
+            // Render tabs as spaces to keep columns aligned visually
             string display = segmentText.Replace("\t", new string(' ', TabSize));
+
+            // Determine markdown kind for this line (caret line always Normal)
+            var kind = GetLineKind(vis.DocLineIndex);
+            var typeface = GetTypefaceForLineKind(kind);
+            var brush = GetBrushForLineKind(kind);
 
             var ft = new FormattedText(
                 display,
@@ -84,7 +69,7 @@ namespace CanvasBoard.App.Views.Board
                 FlowDirection.LeftToRight,
                 typeface,
                 BaseFontSize,
-                _foregroundBrush);
+                brush);
 
             context.DrawText(ft, new Point(LeftPadding, y));
         }
@@ -190,6 +175,14 @@ namespace CanvasBoard.App.Views.Board
                 int end = start + v.Length;
 
                 if (caretCol >= start && caretCol <= end)
+                {
+                    caretVisual = v;
+                    visualIndex = i;
+                    break;
+                }
+
+                // Handle empty line
+                if (v.Length == 0 && caretCol == 0)
                 {
                     caretVisual = v;
                     visualIndex = i;

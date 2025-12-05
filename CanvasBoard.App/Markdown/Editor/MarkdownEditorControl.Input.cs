@@ -577,10 +577,14 @@ namespace CanvasBoard.App.Views.Board
                     return;
             }
 
-            string lineText = Document.Lines[caretLine] ?? string.Empty;
+            // Current line text (where the caret is now)
+            string currentLineText = Document.Lines[caretLine] ?? string.Empty;
 
-            // Visual columns from segment start to caret
-            int currentCols = ComputeColumns(lineText, currentVis.StartColumn, caretCol - currentVis.StartColumn);
+            // Visual columns from segment start to caret, on the current line
+            int currentCols = ComputeColumns(
+                currentLineText,
+                currentVis.StartColumn,
+                caretCol - currentVis.StartColumn);
 
             int targetIndex = currentVisIndex + delta;
             if (targetIndex < 0 || targetIndex >= _visualLines.Count)
@@ -588,18 +592,24 @@ namespace CanvasBoard.App.Views.Board
 
             var targetVis = _visualLines[targetIndex];
 
-            // Find character in target segment whose visual column is closest to currentCols
-            int segStart = targetVis.StartColumn;
-            int segEnd = segStart + targetVis.Length;
+            // Target line text (where we want to move the caret)
+            string targetLineText = Document.Lines[targetVis.DocLineIndex] ?? string.Empty;
+            int lineLen = targetLineText.Length;
+
+            // Clamp visual segment to actual line length for safety
+            int segStart = System.Math.Clamp(targetVis.StartColumn, 0, lineLen);
+            int segEnd = System.Math.Clamp(segStart + targetVis.Length, 0, lineLen);
+
             int col = 0;
             int bestIndex = segStart;
             int bestDiff = int.MaxValue;
 
+            // Walk characters on the TARGET line, computing visual columns
             for (int i = segStart; i <= segEnd; i++)
             {
                 if (i > segStart)
                 {
-                    char ch = lineText[i - 1];
+                    char ch = targetLineText[i - 1];
                     if (ch == '\t')
                     {
                         col = ((col / TabSize) + 1) * TabSize;
@@ -618,12 +628,10 @@ namespace CanvasBoard.App.Views.Board
                 }
             }
 
-            int newCol = bestIndex;
-            string targetLine = Document.Lines[targetVis.DocLineIndex] ?? string.Empty;
-            newCol = System.Math.Clamp(newCol, 0, targetLine.Length);
-
+            int newCol = System.Math.Clamp(bestIndex, 0, lineLen);
             Document.SetCaret(targetVis.DocLineIndex, newCol);
         }
+
 
         private void MoveCaretToEndOfDocument()
         {
